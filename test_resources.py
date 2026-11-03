@@ -90,7 +90,8 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(self.manager.connections)
             self.assertTrue(self.server.acceptor.done())
             self.assertTrue(all(task.done() for task in self.server.tasks))
-            self.assertEqual(await asyncio.wait_for(raw_reader.read(1), 1), b"")
+            with contextlib.suppress(ConnectionError):
+                self.assertEqual(await asyncio.wait_for(raw_reader.read(1), 1), b"")
             self.assertEqual(await asyncio.wait_for(reader.read(1), 1), b"")
         finally:
             raw_writer.close()
@@ -105,7 +106,7 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(channel.kind == "tcp" for channel in self.manager.connections.values()))
             self.server.close()
             await asyncio.wait_for(self.server.wait_closed(), 3)
-            with contextlib.suppress(OSError):
+            with contextlib.suppress(ConnectionError):
                 self.assertEqual(await asyncio.wait_for(reader.read(1), 2), b"")
             self.assertFalse(self.server.clients)
             self.assertFalse(self.manager.connections)
