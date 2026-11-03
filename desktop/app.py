@@ -274,8 +274,13 @@ class Window(QMainWindow):
         traffic, box = panel()
         top = QHBoxLayout()
         top.addWidget(label("Трафик канала", "section"), 1)
-        legend = label("Приём / передача за последнюю минуту", "muted")
-        top.addWidget(legend)
+        received = label("Приём", "muted")
+        received.setStyleSheet("color: #65d6bf; background: transparent")
+        top.addWidget(received)
+        top.addSpacing(12)
+        top.addWidget(label("Передача", "muted"))
+        top.addSpacing(12)
+        top.addWidget(label("60 с", "muted"))
         box.addLayout(top)
         figures = QHBoxLayout()
         self.figures = {}
@@ -644,17 +649,7 @@ class Window(QMainWindow):
             event.accept()
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Myownvpn desktop client")
-    parser.add_argument("--import-package", type=pathlib.Path)
-    parser.add_argument("--data-dir", type=pathlib.Path, help="separate profile directory")
-    parser.add_argument("--snapshot", type=pathlib.Path, help="render an offline UI screenshot and exit")
-    args = parser.parse_args()
-    os.umask(0o077)
-    if os.name == "posix":
-        import resource
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    app = QApplication(sys.argv[:1])
+def configure_application(app):
     app.setApplicationName("Myownvpn")
     app.setOrganizationName("Myownvpn")
     app.setApplicationVersion(VERSION)
@@ -673,6 +668,20 @@ def main():
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#e9eeec"))
     app.setPalette(palette)
     app.setStyleSheet(pathlib.Path(__file__).with_name("theme.qss").read_text(encoding="utf-8"))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Myownvpn desktop client")
+    parser.add_argument("--import-package", type=pathlib.Path)
+    parser.add_argument("--data-dir", type=pathlib.Path, help="separate profile directory")
+    parser.add_argument("--snapshot", type=pathlib.Path, help="render an offline UI screenshot and exit")
+    args = parser.parse_args()
+    os.umask(0o077)
+    if os.name == "posix":
+        import resource
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    app = QApplication(sys.argv[:1])
+    configure_application(app)
     try:
         window = Window(args.data_dir)
     except (OSError, ValueError):

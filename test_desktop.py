@@ -10,6 +10,7 @@ import logging
 import os
 import pathlib
 import queue
+import secrets
 import socket
 import tarfile
 import tempfile
@@ -167,8 +168,8 @@ class DesktopServerCase(unittest.IsolatedAsyncioTestCase):
         for attempt in range(32):
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_port, socket.socket() as tcp_port:
-                    udp_port.bind(("127.0.0.1", 0))
-                    self.port = udp_port.getsockname()[1]
+                    self.port = 20000 + secrets.randbelow(28000)
+                    udp_port.bind(("127.0.0.1", self.port))
                     tcp_port.bind(("127.0.0.1", self.port))
                 break
             except OSError:

@@ -28,7 +28,7 @@ jobs:
         run: |
           python3 -m venv /tmp/myownvpn-build
           /tmp/myownvpn-build/bin/python -m pip install --require-hashes --only-binary=:all: --no-deps -r desktop/requirements.lock
-          /tmp/myownvpn-build/bin/python -m pip install -r desktop/build-requirements.txt
+          /tmp/myownvpn-build/bin/python -m pip install --require-hashes --only-binary=:all: -r desktop/build-requirements.txt
           /tmp/myownvpn-build/bin/python -m pip check
       - name: Protocol and client regression checks
         run: /tmp/myownvpn-build/bin/python -m unittest discover -v

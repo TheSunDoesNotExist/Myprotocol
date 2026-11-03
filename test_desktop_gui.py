@@ -3,6 +3,7 @@
 import asyncio
 from concurrent.futures import Future
 import logging
+import os
 import pathlib
 import unittest
 from unittest.mock import patch
@@ -10,10 +11,10 @@ from unittest.mock import patch
 from test_desktop import DesktopServerCase, make_package
 
 try:
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import Qt, QPoint
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
-    from desktop.app import Window
+    from desktop.app import Window, configure_application
 except ImportError:
     QApplication = None
 
@@ -23,6 +24,7 @@ class DesktopGuiTests(DesktopServerCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        configure_application(cls.app)
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
@@ -68,13 +70,21 @@ class DesktopGuiTests(DesktopServerCase):
         self.assertIn("сертификат проверен", self.window.description.text())
         reader, writer = await asyncio.open_connection("127.0.0.1", self.local_port)
         try:
-            QTest.mouseClick(self.window.srtl, Qt.MouseButton.LeftButton)
+            QTest.mouseClick(self.window.srtl, Qt.MouseButton.LeftButton, pos=QPoint(10, self.window.srtl.height() // 2))
             await self.wait_ui(lambda: self.window.current_snapshot.get("srtl") is True)
             payload = b"GUI transport integration" * 3000
             writer.write(payload)
             await writer.drain()
             self.assertEqual(await asyncio.wait_for(reader.readexactly(len(payload)), 5), payload)
             self.assertEqual(self.target_count, 1)
+            if capture := os.environ.get("MYOWNVPN_TEST_CAPTURE"):
+                await self.wait_ui(lambda: self.window.current_snapshot.get("rx_bytes", 0) >= len(payload))
+                folder = pathlib.Path(capture)
+                folder.mkdir(parents=True, exist_ok=True)
+                self.window.grab().save(str(folder / "connected.png"))
+                self.window.pages.setCurrentIndex(1)
+                self.app.processEvents()
+                self.window.grab().save(str(folder / "logs.png"))
         finally:
             writer.close()
         QTest.mouseClick(self.window.connect_button, Qt.MouseButton.LeftButton)
