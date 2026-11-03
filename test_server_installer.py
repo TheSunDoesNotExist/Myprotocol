@@ -79,7 +79,13 @@ class ServerInstallerTests(unittest.TestCase):
                 expected = set(config.APP_FILES + config.SERVER_FILES + ("install.sh", "MANIFEST.json"))
                 self.assertEqual({str(pathlib.PurePosixPath(v.name).relative_to(v.name.split('/')[0])) for v in members}, expected)
                 self.assertTrue(all(v.isfile() for v in members))
-                bundle.extractall(root / "unpacked", filter="data")
+                # Debian 12's Python lacks extractall(filter=...). Write only the
+                # regular, allowlisted members checked above, without tar extraction.
+                for item in members:
+                    destination = root / "unpacked" / item.name
+                    self.assertTrue(destination.resolve().is_relative_to((root / "unpacked").resolve()))
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(bundle.extractfile(item).read())
             source = next((root / "unpacked").iterdir())
             self.assertEqual(admin.verify_package(source), source.resolve())
             (source / "tunnel.py").write_text("tampered")
