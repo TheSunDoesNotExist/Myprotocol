@@ -305,15 +305,112 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.session.closed)
 
     async def test_all_candidates_rejected_stops_without_plaintext_fallback(self):
+        self.reconnector.cancel()
+        await asyncio.gather(self.reconnector, return_exceptions=True)
         session = Session(grace=12)
         controller = AdaptiveClient(session, {"tcp": self.endpoint, "udp": self.udp_endpoint},
                                     "a" * 64, self.context, "localhost", self.quic)
-        with patch("tunnel.probe", side_effect=SecurityError("verification failed")), \
-                patch("tunnel.connect") as connector:
+        with patch("tunnel.probe") as probing, \
+                patch("tunnel.connect", side_effect=SecurityError("verification failed")) as connector:
             await asyncio.wait_for(controller.run(), 3)
-            connector.assert_not_called()
+            self.assertEqual(connector.await_count, 2)
+            probing.assert_not_called()
         self.assertTrue(session.closed)
         self.assertEqual(session.reason, "no_authenticated_path")
+
+    async def test_initial_handshake_succeeds_when_all_standalone_probes_fail(self):
+        self.reconnector.cancel()
+        await asyncio.gather(self.reconnector, return_exceptions=True)
+        session = Session(grace=5)
+        controller = AdaptiveClient(session, {"tcp": self.endpoint, "udp": self.udp_endpoint},
+                                    "a" * 64, self.context, "localhost", self.quic, interval=.1)
+        measured = asyncio.Event()
+        async def failed_probe(*args):
+            self.assertTrue(session.connected_once)
+            measured.set()
+            raise TimeoutError
+        task = local = writer = None
+        try:
+            with patch("tunnel.probe", side_effect=failed_probe):
+                task = asyncio.create_task(controller.run())
+                await base.eventually(lambda: controller.active == "tcp")
+                await asyncio.wait_for(measured.wait(), 2)
+                local = await asyncio.start_server(session.accept_local, "127.0.0.1", 0)
+                reader, writer = await asyncio.open_connection(*local.sockets[0].getsockname()[:2])
+                writer.write(b"connected without prerequisite probes")
+                await writer.drain()
+                self.assertEqual(await asyncio.wait_for(reader.readexactly(37), 3), b"connected without prerequisite probes")
+                self.assertEqual(controller.active, "tcp")
+                self.assertNotIn("tcp", controller.quarantined)
+        finally:
+            if writer:
+                writer.close()
+            if task:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            if local:
+                local.close()
+                await local.wait_closed()
+            session.close()
+            await session.wait_closed()
+
+    async def test_reconnect_uses_protocol_even_when_probe_scores_are_unavailable(self):
+        reader, writer = await self.local_connect()
+        try:
+            writer.write(b"before")
+            await writer.drain()
+            self.assertEqual(await reader.readexactly(6), b"before")
+            with patch("tunnel.probe", side_effect=TimeoutError):
+                self.tls.close()
+                server_session = next(iter(self.manager.sessions.values()))
+                server_session.detach(server_session.writer)
+                await base.eventually(lambda: self.controller.active == "udp", timeout=8)
+                payload = os.urandom(100_000)
+                writer.write(payload)
+                await writer.drain()
+                self.assertEqual(await asyncio.wait_for(reader.readexactly(len(payload)), 5), payload)
+                self.assertEqual(self.connections, 1)
+        finally:
+            writer.close()
+
+    async def test_initial_tcp_tls_timeout_falls_back_to_authenticated_udp(self):
+        self.reconnector.cancel()
+        await asyncio.gather(self.reconnector, return_exceptions=True)
+        pending = set()
+        async def blackhole(reader, writer):
+            task = asyncio.current_task()
+            pending.add(task)
+            try:
+                await reader.read()
+            finally:
+                writer.close()
+                pending.discard(task)
+        blocked = await asyncio.start_server(blackhole, "127.0.0.1", 0)
+        session = Session(grace=10)
+        controller = AdaptiveClient(session, {"tcp": blocked.sockets[0].getsockname()[:2], "udp": self.udp_endpoint},
+                                    "a" * 64, self.context, "localhost", self.quic)
+        async def failed_probe(*args):
+            self.assertTrue(session.connected_once)
+            raise TimeoutError
+        task = None
+        try:
+            with patch("tunnel.probe", side_effect=failed_probe):
+                task = asyncio.create_task(controller.run())
+                await base.eventually(lambda: controller.active == "udp", timeout=7)
+                self.assertTrue(session.established)
+                self.assertIsNotNone(self.manager.sessions.get(session.sid))
+                self.assertEqual(session.writer.kind, "udp")
+        finally:
+            if task:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            session.close()
+            await session.wait_closed()
+            blocked.close()
+            await blocked.wait_closed()
+            for task in list(pending):
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 if __name__ == "__main__":

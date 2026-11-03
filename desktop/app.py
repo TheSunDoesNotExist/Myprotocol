@@ -36,10 +36,14 @@ EVENT_NAMES = {
     "srtl_configured": "Настройка SRTL", "connection_rejected": "Соединение отклонено",
     "resume_rejected": "Восстановление отклонено", "client_stopped": "Клиент остановлен",
     "frame_replayed": "Повторная доставка", "connect_superseded": "Попытка заменена новой",
+    "transport_handshake_started": "Начало TLS/QUIC", "transport_handshake_complete": "TLS установлен",
+    "carrier_handshake_started": "Авторизация HTTPS", "carrier_handshake_complete": "HTTPS авторизован",
+    "protocol_handshake_started": "Установка сессии протокола",
 }
 ERRORS = {
     "security_verification_failed": "Не прошла проверка сертификата или ключа. Проверьте профиль и журнал",
     "session_expired": "Сессия завершилась. Подключитесь заново, чтобы открыть новый канал",
+    "connection_timeout": "Не удалось установить защищённый канал за отведённое время. Проверьте адрес, порт и журнал",
     "port_unavailable": "Локальный порт занят или недоступен. Выберите другой порт",
     "connection_setup_failed": "Не удалось открыть канал. Проверьте сертификат, настройки и журнал",
     "internal_error": "Клиент остановил канал из-за внутренней ошибки. Сохраните журнал",

@@ -625,6 +625,8 @@ async def serve_tcp(manager, address, context, *, kind="tcp", ech=False):
 
 async def open_channel(kind, endpoint, context, hostname, quic=None, key=None):
     requested_kind = kind
+    event("transport_handshake_started", path=kind, endpoint=str(endpoint),
+          stage="tls_handshake" if kind == "tcp" else "quic_handshake")
     gateway = getattr(context, "ech_gateway", None)
     if gateway is not None:
         if gateway.process.returncode is not None or kind not in gateway.endpoints:
@@ -649,9 +651,12 @@ async def open_channel(kind, endpoint, context, hostname, quic=None, key=None):
             raise SecurityError("ALPN mismatch")
         writer = SecureWriter(raw)
         writer.kind, writer.ech = requested_kind, gateway is not None
+        event("transport_handshake_complete", path=requested_kind, stage="tls_handshake", tls="TLSv1.3")
         try:
             if key is not None:
+                event("carrier_handshake_started", path=requested_kind, stage="https_connect")
                 await connect_http(reader, writer, key)
+                event("carrier_handshake_complete", path=requested_kind, stage="https_connect")
             return reader, writer
         except CarrierRejected as exc:
             writer.close()
@@ -747,8 +752,11 @@ async def open_udp_address(family, remote, quic, key):
         await asyncio.wait_for(protocol.wait_connected(), CONNECT_TIMEOUT)
         if protocol.security_failure or protocol.negotiated_alpn != H3_ALPN:
             raise SecurityError("QUIC security policy")
+        event("transport_handshake_complete", path="udp", stage="quic_handshake", tls="TLSv1.3")
         if key is not None:
+            event("carrier_handshake_started", path="udp", stage="http3_connect")
             reader, raw = await protocol.open_http(key)
+            event("carrier_handshake_complete", path="udp", stage="http3_connect")
         else:
             # Low-level QUIC access for ordinary HTTP clients / adversarial tests.
             reader, raw = super(TunnelQuicProtocol, protocol)._create_stream(0)

@@ -1,7 +1,7 @@
 name: Fedora 44 client
 on:
   push:
-    branches: [codex/desktop-client, codex/client-access]
+    branches: [codex/desktop-client, codex/client-access, codex/connect-first]
   workflow_dispatch:
 permissions:
   contents: read

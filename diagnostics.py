@@ -18,7 +18,7 @@ FIELDS = set("session transport path previous reason stream seq offset bytes que
              "buffered_bytes delivered_bytes credit_blocked_streams limit family carrier "
              "connections pending_connections srtl srtl_padding_bytes srtl_merged_reads "
              "srtl_cover_tx srtl_cover_rx srtl_cover_bytes_tx srtl_cover_bytes_rx "
-             "client clients revoked action".split())
+             "client clients revoked action stage error_type error_code local_endpoint".split())
 
 
 def tag(sid):

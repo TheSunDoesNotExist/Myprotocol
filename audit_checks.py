@@ -227,14 +227,11 @@ class StateAudit(unittest.IsolatedAsyncioTestCase):
             server.close()
             await server.wait_closed()
 
-    async def test_healthy_probe_does_not_wait_for_failed_alternative(self):
+    async def test_initial_connection_does_not_wait_for_alternative_probes(self):
         session = tunnel.Session(grace=1)
-        tcp_verified = asyncio.Event()
 
         async def samples(kind, *args):
-            if kind == "tcp":
-                tcp_verified.set()
-                return [1, 1, 1]
+            self.assertTrue(connected.is_set(), "a probe must not gate the initial handshake")
             await asyncio.sleep(2)
             raise TimeoutError
 
@@ -252,7 +249,6 @@ class StateAudit(unittest.IsolatedAsyncioTestCase):
             task = asyncio.create_task(controller.run())
             try:
                 await asyncio.wait_for(connected.wait(), 0.5)
-                self.assertTrue(tcp_verified.is_set())
                 self.assertFalse(session.closed)
                 self.assertEqual(controller.active, "tcp")
                 connector.assert_awaited_once()

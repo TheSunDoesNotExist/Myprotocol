@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import base64
 import contextlib
+from collections import deque
 import hashlib
 import hmac
 import ipaddress
@@ -243,6 +244,9 @@ class Session:
         self.tx_bytes = self.rx_bytes = self.replayed = 0
         self.pings = {}
         self.rtt_ms = None
+        self.rtt_samples = deque(maxlen=8)
+        self.rtt_measured = 0
+        self.connected_once = False
         self.last_metrics = time.monotonic()
         self.detached_at = time.monotonic()
         self.last_seen = time.monotonic()
@@ -365,6 +369,10 @@ class Session:
         abort(self.writer)
         self.writer, self.transport_id = writer, transport_id
         self.path = getattr(writer, "kind", "tcp")
+        self.connected_once = True
+        self.rtt_ms = None
+        self.rtt_samples.clear()
+        self.rtt_measured = 0
         self.detached_at = None
         self.last_seen = time.monotonic()
         self.sent_on.clear()
@@ -475,7 +483,7 @@ class Session:
                       active_streams=sum(not s.reset and not (s.local_fin and s.remote_fin)
                                          for s in self.streams.values()))
             if self.detached_at is not None and now - self.detached_at >= self.grace:
-                self.close("resume deadline expired")
+                self.close("resume deadline expired" if self.connected_once else "connection deadline expired")
 
     async def run_transport(self, reader, writer):
         try:
@@ -502,6 +510,8 @@ class Session:
                     sent = self.pings.pop(nonce, None)
                     if sent is not None:
                         self.rtt_ms = round((time.monotonic() - sent) * 1000, 2)
+                        self.rtt_samples.append(self.rtt_ms)
+                        self.rtt_measured = time.monotonic()
                     continue
                 elif kind == "ack":
                     self.acknowledge(frame)
@@ -883,6 +893,8 @@ async def connect(session, endpoint, key, context, hostname, *, kind="tcp", quic
         hello = dict(type="hello", version=VERSION, key=key, generation=generation)
         if getattr(session, "established", False):
             hello.update(session=session.sid, secret=session.secret)
+        event("protocol_handshake_started", path=kind, session=tag(session.sid), stage="hello_ready",
+              generation=generation, resumed=getattr(session, "established", False))
         await write_frame(writer, hello)
         reply = await asyncio.wait_for(read_frame(reader), 5)
         if reply["type"] == "rejected":
@@ -971,6 +983,7 @@ class AdaptiveClient:
         self.quarantined = set()
         self.measure_changed = asyncio.Event()
         self.switch_lock = asyncio.Lock()
+        self.preferred = "tcp" if "tcp" in endpoints else next(iter(endpoints))
 
     def quarantine(self, kind):
         self.quarantined.add(kind)
@@ -979,26 +992,43 @@ class AdaptiveClient:
               reason="certificate_or_authentication_failed")
 
     async def measure(self):
+        if self.session.writer is None or not self.runner or self.runner.done():
+            return
         kinds = tuple(kind for kind in self.endpoints if kind not in self.quarantined)
 
         async def measure_path(kind):
+            if kind == self.active:
+                # Measure the established encrypted channel. A second connection's
+                # probe failure must not declare a working DATA channel unavailable.
+                stat = self.selector.stats[kind]
+                if self.session.rtt_samples and self.session.rtt_measured > stat.measured:
+                    stat.update(list(self.session.rtt_samples), now=self.session.rtt_measured)
+                    event("path_probe", path=kind, reason="ok", stage="established_channel",
+                          rtt_ms=round(stat.rtt_ms, 2), jitter_ms=round(stat.jitter_ms, 2),
+                          failure_rate=round(stat.failure_rate, 3), attempts=stat.attempts)
+                    self.measure_changed.set()
+                return
+            failure = {}
             try:
                 samples = await probe(kind, self.endpoints[kind], self.key,
                                       self.context, self.hostname, self.quic)
             except SecurityError:
-                self.quarantine(kind)
-                self.measure_changed.set()
+                if kind != self.active:
+                    self.quarantine(kind)
+                    self.measure_changed.set()
                 return
-            except (OSError, TimeoutError, asyncio.IncompleteReadError):
+            except (OSError, TimeoutError, asyncio.IncompleteReadError) as exc:
                 samples = None
-            if kind not in self.quarantined:
+                failure = dict(error_type=type(exc).__name__, error_code=getattr(exc, "errno", None))
+            if kind not in self.quarantined and kind != self.active:
                 stat = self.selector.stats[kind]
                 stat.update(samples)
                 event("path_probe", path=kind, reason="ok" if stat.available else "network_error",
                       rtt_ms=round(stat.rtt_ms, 2) if stat.available else None,
                       jitter_ms=round(stat.jitter_ms, 2), failure_rate=round(stat.failure_rate, 3),
                       failures=stat.failures, attempts=stat.attempts,
-                      score_ms=round(stat.score(kind, time.monotonic()), 2) if stat.available else None)
+                      score_ms=round(stat.score(kind, time.monotonic()), 2) if stat.available else None,
+                      stage="alternative_channel", **failure)
                 self.measure_changed.set()
 
         await asyncio.gather(*(measure_path(kind) for kind in kinds))
@@ -1029,9 +1059,10 @@ class AdaptiveClient:
             self.retry_at = time.monotonic() + 0.25
             event("connect_superseded", path=kind, reason="newer_attempt")
             return False
-        except (OSError, ConnectionError, TimeoutError, asyncio.IncompleteReadError):
+        except (OSError, ConnectionError, TimeoutError, asyncio.IncompleteReadError) as exc:
             self.selector.stats[kind].update()
-            event("connect_failed", logging.WARNING, path=kind, reason="network_error")
+            event("connect_failed", logging.WARNING, path=kind, reason="network_error",
+                  error_type=type(exc).__name__, error_code=getattr(exc, "errno", None))
             self.retry_at = time.monotonic() + 0.25
             return False
         # Only after the new authenticated channel is accepted do we stop the old
@@ -1040,6 +1071,7 @@ class AdaptiveClient:
         # Publish ownership before yielding to clean up the old reader. DATA on
         # the committed channel must never race stale controller state.
         self.active = kind
+        self.preferred = kind
         self.runner = asyncio.create_task(self.session.run_transport(reader, writer))
         self.selector.committed()
         if previous_runner:
@@ -1047,11 +1079,39 @@ class AdaptiveClient:
             await asyncio.gather(previous_runner, return_exceptions=True)
         return True
 
+    async def establish(self):
+        """Attempt actual authenticated session setup, independently of probe scores."""
+        for kind in (self.preferred, *[k for k in self.endpoints if k != self.preferred]):
+            if self.session.closed:
+                return False
+            if kind not in self.quarantined and await self.switch(kind, "resume_connection" if self.session.connected_once else "initial_connection"):
+                return True
+        self.retry_at = time.monotonic() + .5
+        return False
+
     async def run(self):
         next_probe = 0
         try:
             while not self.session.closed:
                 now = time.monotonic()
+                alive = self.session.writer is not None and self.runner and not self.runner.done()
+                if not alive:
+                    if self.probing:
+                        self.probing.cancel()
+                        await asyncio.gather(self.probing, return_exceptions=True)
+                        self.probing = None
+                    if self.active:
+                        failed = self.active
+                        self.selector.stats[failed].update()
+                        self.preferred = next((k for k in self.endpoints if k != failed and k not in self.quarantined), failed)
+                        self.active = None
+                    if len(self.quarantined) == len(self.endpoints):
+                        self.session.close("no_authenticated_path")
+                        break
+                    if now >= self.retry_at:
+                        await self.establish()
+                    await asyncio.sleep(.05)
+                    continue
                 if self.probing is None and now >= next_probe:
                     self.probing = asyncio.create_task(self.measure())
                     next_probe = now + self.interval
@@ -1061,15 +1121,8 @@ class AdaptiveClient:
                     await self.probing
                     self.probing = None
                     measured = True
-                alive = self.session.writer is not None and self.runner and not self.runner.done()
-                if not alive and len(self.quarantined) == len(self.endpoints):
-                    self.session.close("no_authenticated_path")
-                    break
-                if not alive and self.active:
-                    self.selector.stats[self.active].update()
-                    self.active = None
-                if (measured or not alive) and now >= self.retry_at:
-                    desired, reason = self.selector.choose(self.active if alive else None)
+                if measured and self.session.rtt_samples and now >= self.retry_at:
+                    desired, reason = self.selector.choose(self.active)
                     if desired and desired != self.active:
                         await self.switch(desired, reason,
                                           expected_generation=self.session.next_generation)

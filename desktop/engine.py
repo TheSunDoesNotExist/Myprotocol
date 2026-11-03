@@ -136,7 +136,7 @@ class Engine:
             local = await asyncio.start_server(session.accept_local, "127.0.0.1", profile.local_port, limit=CHUNK)
             runner = asyncio.create_task(controller.run())
             waiter = asyncio.create_task(self.stop_event.wait())
-            event("client_started", endpoint=f"127.0.0.1:{profile.local_port}", mode=profile.transport)
+            event("client_started", endpoint=profile.address, local_endpoint=f"127.0.0.1:{profile.local_port}", mode=profile.transport)
             while not self.stop_event.is_set() and not session.closed and not runner.done():
                 now = time.monotonic()
                 alive = session.writer is not None and controller.runner is not None and not controller.runner.done()
@@ -162,7 +162,8 @@ class Engine:
             if runner.done():
                 await runner
             if not self.stop_event.is_set():
-                reason = "security_verification_failed" if session.reason in ("no_authenticated_path", "security_verification_failed") else "session_expired"
+                reason = ("security_verification_failed" if session.reason in ("no_authenticated_path", "security_verification_failed") else
+                          "session_expired" if connected_once else "connection_timeout")
                 self.publish("error", {"reason": reason})
         finally:
             if local:

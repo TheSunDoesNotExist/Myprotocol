@@ -9,7 +9,7 @@ Docker на VPS и замены системного Python. Это TCP-пере
 Готовый серверный пакет этой версии доступен в GitHub Releases:
 
 ```bash
-release=https://github.com/TheSunDoesNotExist/Myprotocol/releases/download/server-v0.2.3
+release=https://github.com/TheSunDoesNotExist/Myprotocol/releases/download/clients-v0.3.0
 curl --fail --location --remote-name "$release/myownvpn-server-debian13-v5.tar.gz"
 curl --fail --location --remote-name "$release/myownvpn-server-debian13-v5.tar.gz.sha256"
 ```
