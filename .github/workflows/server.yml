@@ -1,0 +1,62 @@
+name: Debian server
+on:
+  push:
+    branches: [codex/debian12]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  debian:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - debian: '12'
+            image: debian:12-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+          - debian: '13'
+            image: debian:13-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
+    container:
+      image: ${{ matrix.image }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      PYTHONUTF8: '1'
+    steps:
+      - name: Install Debian system packages
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y git python3 python3-venv ca-certificates systemd openssl
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned verification dependencies
+        run: |
+          python3 -m venv /tmp/myownvpn-check
+          /tmp/myownvpn-check/bin/python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps -r server/requirements.lock
+          /tmp/myownvpn-check/bin/python -m pip check
+      - name: Protocol, client and installer regression checks
+        run: /tmp/myownvpn-check/bin/python -m unittest discover -v
+      - name: Build and install the server package
+        run: |
+          /tmp/myownvpn-check/bin/python server/build.py
+          mkdir /tmp/myownvpn-package
+          tar -xzf .local/dist/myownvpn-server-debian13-v5.tar.gz -C /tmp/myownvpn-package --strip-components=1
+          umask 077
+          printf '%s' 'Disposable-CI-identity-password-2026' > /tmp/myownvpn-test-password
+          bash /tmp/myownvpn-package/install.sh install --yes --public-ip 127.0.0.1 --port 8443 --target 127.0.0.1:9000 --generate-identity --ca-password-file /tmp/myownvpn-test-password --no-start
+          systemd-analyze verify /etc/systemd/system/myownvpn.service
+      - name: Verify update preserves existing keys and clients
+        run: |
+          find /etc/myownvpn -type f -exec sha256sum {} + | sort > /tmp/myownvpn-before
+          bash /tmp/myownvpn-package/install.sh update --yes --no-start
+          find /etc/myownvpn -type f -exec sha256sum {} + | sort > /tmp/myownvpn-after
+          diff -u /tmp/myownvpn-before /tmp/myownvpn-after
+      - name: Exercise installed server as its service user
+        run: /opt/myownvpn/current/venv/bin/python -I .github/check_server.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: myownvpn-debian-${{ matrix.debian }}-server
+          path: |
+            .local/dist/myownvpn-server-debian13-v5.tar.gz
+            .local/dist/myownvpn-server-debian13-v5.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14

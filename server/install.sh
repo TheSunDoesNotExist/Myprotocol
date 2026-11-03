@@ -7,12 +7,12 @@ if (( EUID != 0 )); then
     exit 1
 fi
 if [[ ! -r /etc/os-release ]]; then
-    printf 'Не удалось определить ОС. Нужен Debian 13.\n' >&2
+    printf 'Не удалось определить ОС. Нужен Debian 12 или 13.\n' >&2
     exit 1
 fi
 . /etc/os-release
-if [[ ${ID:-} != debian || ${VERSION_ID%%.*} != 13 ]]; then
-    printf 'Этот установщик предназначен для Debian 13.\n' >&2
+if [[ ${ID:-} != debian || ( ${VERSION_ID%%.*} != 12 && ${VERSION_ID%%.*} != 13 ) ]]; then
+    printf 'Этот установщик предназначен для Debian 12 или 13.\n' >&2
     exit 1
 fi
 here=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)

@@ -3,6 +3,7 @@
 import ipaddress
 import json
 import pathlib
+import platform
 
 BASE = pathlib.Path("/opt/myownvpn")
 ETC = pathlib.Path("/etc/myownvpn")
@@ -10,11 +11,20 @@ UNIT = pathlib.Path("/etc/systemd/system/myownvpn.service")
 COMMAND = pathlib.Path("/usr/local/sbin/myownvpn")
 MARKER = "# Managed by Myownvpn Debian installer"
 PROTOCOL = 5
-SERVER_VERSION = "0.2.1"
+SERVER_VERSION = "0.2.2"
 APP_FILES = ("tunnel.py", "transports.py", "http_carrier.py", "selection.py", "diagnostics.py",
              "srtl.py", "ech_gateway.py", "ip_cert.py", "client_config.py")
 SERVER_FILES = ("server/admin.py", "server/config.py", "server/runtime.py", "server/identity.py",
                 "server/requirements.lock", "server/README.md", "server/clients.py", "server/updater.py")
+
+
+def debian_python():
+    release = platform.freedesktop_os_release()
+    major = release.get("VERSION_ID", "").split(".")[0]
+    supported = {"12": [3, 11], "13": [3, 13]}
+    if release.get("ID") != "debian" or major not in supported:
+        raise ValueError("Поддерживаются Debian 12 и 13. Система не изменена")
+    return supported[major]
 
 
 def validate(data):

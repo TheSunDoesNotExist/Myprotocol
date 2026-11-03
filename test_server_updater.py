@@ -149,7 +149,9 @@ class UpdaterTests(unittest.TestCase):
 
     def test_menu_check_cancel_and_apply_use_verified_new_installer(self):
         (self.root / "server.json").write_text("{}")
-        candidate = replace(self.release, version="0.2.2", tag="server-v0.2.2")
+        major, minor, patch_number = updater.version(config.SERVER_VERSION)
+        future = f"{major}.{minor}.{patch_number + 1}"
+        candidate = replace(self.release, version=future, tag="server-v" + future)
         args = argparse.Namespace(yes=False, no_start=False)
         with patch.object(admin, "ETC", self.root), patch.object(updater, "latest", return_value=candidate), patch.object(updater, "stage", return_value=self.root / "stage") as stage, patch.object(admin.subprocess, "run", return_value=argparse.Namespace(returncode=0)) as run, patch.object(admin, "yes", return_value=False), patch.object(admin.tempfile, "TemporaryDirectory", side_effect=lambda **kwargs: contextlib.nullcontext(str(self.root))), contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(admin.online_update(args, check_only=True))

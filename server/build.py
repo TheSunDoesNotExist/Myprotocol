@@ -29,7 +29,7 @@ def refresh_lock():
         hashes = sorted({file["digests"]["sha256"] for file in wheels})
         entries.append(line + " \\\n" + " \\\n".join("    --hash=sha256:" + digest for digest in hashes))
     (ROOT / "server/requirements.lock").write_text(
-        "# Debian 13 amd64/arm64; PyPI wheel hashes; binary-only installation.\n" + "\n".join(entries) + "\n", encoding="utf-8")
+        "# Debian 12/13 amd64/arm64; PyPI wheel hashes; binary-only installation.\n" + "\n".join(entries) + "\n", encoding="utf-8")
 
 
 def build(output):

@@ -1,6 +1,6 @@
-# Myownvpn Server — Debian 13
+# Myownvpn Server — Debian 12 и 13
 
-Отдельный терминальный установщик сервера протокола v5. Без GUI, домена, SNI,
+Отдельный терминальный установщик сервера протокола v5 для Debian 12 и 13. Без GUI, домена, SNI,
 Docker на VPS и замены системного Python. Это TCP-перенаправитель к заданному
 `--target`, не TUN-маршрутизация всей ОС. Клиент нужен отдельно, той же версии v5.
 
@@ -9,7 +9,7 @@ Docker на VPS и замены системного Python. Это TCP-пере
 Готовый серверный пакет этой версии доступен в GitHub Releases:
 
 ```bash
-release=https://github.com/TheSunDoesNotExist/Myprotocol/releases/download/server-v0.2.1
+release=https://github.com/TheSunDoesNotExist/Myprotocol/releases/download/server-v0.2.2
 curl --fail --location --remote-name "$release/myownvpn-server-debian13-v5.tar.gz"
 curl --fail --location --remote-name "$release/myownvpn-server-debian13-v5.tar.gz.sha256"
 ```
@@ -114,7 +114,8 @@ key, журналов и исходников клиента в нём нет.
 - `myownvpn.service` — отдельный пользователь без login shell, systemd LoadCredential,
   read-only system/home restrictions, без root; capability bind-service только для порта <1024.
 
-Python 3.13 и venv ставятся из подписанных репозиториев Debian. Runtime wheels
+Штатный Python и venv ставятся из подписанных репозиториев Debian: Python 3.11
+на Debian 12 и Python 3.13 на Debian 13. Системный Python не заменяется. Runtime wheels
 закреплены версиями и SHA-256, устанавливаются только бинарные файлы с PyPI;
 сборки из исходников и неявных зависимостей нет. Поддерживаются amd64 и arm64 при
 наличии соответствующих wheels. Интернет нужен для apt и PyPI.
@@ -199,6 +200,10 @@ sudo bash install.sh install --yes --public-ip 198.51.100.10 --port 8443 \
 проверяет целостность и не заменяет проверку происхождения самого архива.
 
 ## Что проверено
+
+Сервер 0.2.2 добавляет Debian 12. Имя архива/каталога `myownvpn-server-debian13-v5`
+сохранено для совместимости с обновлением из меню 0.2.1; пакет поддерживает обе ОС.
+Клиенты Windows/Fedora 0.2.0 остаются совместимы.
 
 3 ноября 2026: установка с нуля и обновление в изолированном Debian 13 amd64,
 Python 3.13.5; подписи Debian проверены apt, wheels — по SHA-256. Из-за недоступности

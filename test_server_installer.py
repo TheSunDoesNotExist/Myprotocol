@@ -27,6 +27,14 @@ def example():
 
 
 class ServerInstallerTests(unittest.TestCase):
+    def test_debian_12_and_13_use_their_own_system_python(self):
+        for version, expected in (("12", [3, 11]), ("12.15", [3, 11]), ("13", [3, 13])):
+            with self.subTest(version=version), patch.object(config.platform, "freedesktop_os_release", return_value=dict(ID="debian", VERSION_ID=version)):
+                self.assertEqual(config.debian_python(), expected)
+        for release in (dict(ID="ubuntu", VERSION_ID="24.04"), dict(ID="debian", VERSION_ID="11"), dict(ID="debian", VERSION_ID="14"), dict(ID="debian", VERSION_ID="sid")):
+            with self.subTest(release=release), patch.object(config.platform, "freedesktop_os_release", return_value=release), self.assertRaises(ValueError):
+                config.debian_python()
+
     def test_config_rejects_unsafe_or_ambiguous_values(self):
         values = dict(port=[0, 65536, True], public_ips=[["example.org"], ["0.0.0.0"], [1234]],
                       listen=["0.0.0.0\nExecStart=/bin/sh", "::"], schema=[True, 2],

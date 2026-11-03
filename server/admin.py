@@ -1,4 +1,4 @@
-"""Debian 13 terminal installer and local server management. Standard library only."""
+"""Debian 12/13 terminal installer and local server management. Standard library only."""
 
 import argparse
 import datetime
@@ -21,7 +21,7 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from server.config import APP_FILES, SERVER_FILES, BASE, COMMAND, ETC, MARKER, PROTOCOL, SERVER_VERSION, UNIT, address, load, unit_text, validate
+from server.config import APP_FILES, SERVER_FILES, BASE, COMMAND, ETC, MARKER, PROTOCOL, SERVER_VERSION, UNIT, address, debian_python, load, unit_text, validate
 from server import clients
 from client_config import encode
 
@@ -35,7 +35,7 @@ def paint(text, code):
     return f"\033[{code}m{text}\033[0m" if COLOR else text
 
 
-def banner(title="Сервер для Debian 13"):
+def banner(title="Сервер для Debian 12 / 13"):
     print("\n" + paint("MYOWNVPN", "1;36") + "  /  " + title)
     print(paint(f"Сервер {SERVER_VERSION} · IP без SNI · TLS 1.3 / QUIC · протокол v{PROTOCOL}", "2"))
     print(paint("─" * min(64, shutil.get_terminal_size((64, 24)).columns - 1), "2"))
@@ -71,10 +71,8 @@ def yes(label, default=False):
 
 def host_check(require_manager=True):
     if platform.system() != "Linux" or os.geteuid() != 0:
-        raise ValueError("Запустите через sudo на Debian 13.")
-    release = dict(line.split("=", 1) for line in pathlib.Path("/etc/os-release").read_text().splitlines() if "=" in line)
-    if release.get("ID", "").strip('"') != "debian" or release.get("VERSION_ID", "").strip('"').split(".")[0] != "13":
-        raise ValueError("Поддерживается только Debian 13. Система не изменена.")
+        raise ValueError("Запустите через sudo на Debian 12 или 13.")
+    debian_python()
     if require_manager and pathlib.Path("/proc/1/comm").read_text().strip() != "systemd":
         raise ValueError("Для запуска нужен systemd. Для сборки образа используйте --no-start.")
     for path in (BASE, BASE / "releases", ETC, COMMAND, UNIT):
@@ -201,8 +199,9 @@ def make_release(source):
     run(("apt-get", "update"))
     run(("apt-get", "install", "--no-install-recommends", "-y", "python3", "python3-venv", "ca-certificates", "systemd"))
     version = json.loads(run(("/usr/bin/python3", "-c", "import sys,json;print(json.dumps(list(sys.version_info[:2])))"), capture=True).stdout)
-    if version != [3, 13]:
-        raise ValueError("Ожидался штатный Python 3.13 из Debian 13.")
+    expected = debian_python()
+    if version != expected:
+        raise ValueError(f"Ожидался штатный Python {expected[0]}.{expected[1]} для вашей версии Debian.")
     BASE.mkdir(mode=0o755, exist_ok=True)
     BASE.chmod(0o755)
     (BASE / "releases").mkdir(mode=0o755, exist_ok=True)
@@ -415,7 +414,7 @@ def status(doctor=False):
     banner("Состояние сервера")
     row("Версия сервера", SERVER_VERSION)
     if not (ETC / "server.json").is_file():
-        print("  Сервер не установлен. Выберите установку из архива Debian 13.\n")
+        print("  Сервер не установлен. Выберите установку из архива Debian 12 / 13.\n")
         return
     cfg = load()
     result = subprocess.run(("systemctl", "is-active", "myownvpn.service"), capture_output=True, text=True)
@@ -735,7 +734,7 @@ def menu(args):
 
 def main():
     os.umask(0o077)
-    parser = argparse.ArgumentParser(description="Myownvpn server · Debian 13 · terminal only")
+    parser = argparse.ArgumentParser(description="Myownvpn server · Debian 12/13 · terminal only")
     parser.add_argument("command", nargs="?", default="menu",
         choices=("menu", "install", "update", "upgrade", "check-update", "status", "doctor", "logs", "start", "stop", "restart", "srtl", "export", "uninstall", "preview", "clients", "client-add", "client-show", "client-delete"))
     parser.add_argument("--client", help="ID клиента из списка")

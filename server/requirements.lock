@@ -1,4 +1,4 @@
-# Debian 13 amd64/arm64; PyPI wheel hashes; binary-only installation.
+# Debian 12/13 amd64/arm64; PyPI wheel hashes; binary-only installation.
 aioquic==1.7.1 \
     --hash=sha256:4d90f8382951f16909ba8b8cbe8cba00f867ca464aa5898789afc9e8e5111504 \
     --hash=sha256:7182c17a3f8936a574be9e18a00056fa05e7c29eb2521eaafb779817ffdfa14d
