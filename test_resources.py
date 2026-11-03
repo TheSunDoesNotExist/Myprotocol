@@ -97,6 +97,22 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
             writer.close()
             await asyncio.gather(raw_writer.wait_closed(), writer.wait_closed(), return_exceptions=True)
 
+    async def test_tcp_kind_and_listener_shutdown_close_the_accepted_channel(self):
+        reader, writer = await open_channel("tcp", self.endpoint, self.context, "localhost", key="a" * 64)
+        try:
+            await base.eventually(lambda: bool(self.manager.connections))
+            self.assertEqual(self.server.kind, "tcp")
+            self.assertTrue(all(channel.kind == "tcp" for channel in self.manager.connections.values()))
+            self.server.close()
+            await asyncio.wait_for(self.server.wait_closed(), 3)
+            with contextlib.suppress(OSError):
+                self.assertEqual(await asyncio.wait_for(reader.read(1), 2), b"")
+            self.assertFalse(self.server.clients)
+            self.assertFalse(self.manager.connections)
+        finally:
+            writer.close()
+            await asyncio.gather(writer.wait_closed(), return_exceptions=True)
+
     async def test_quic_send_buffer_blocks_then_resumes_and_shutdown_stops_timers(self):
         release = asyncio.Event()
         received = 0

@@ -590,6 +590,11 @@ class BoundedTCPServer:
     def close(self):
         self.acceptor.cancel()
         self.listener.close()
+        for client, (_, writer) in list(self.clients.items()):
+            if writer:
+                writer.close()
+            else:
+                client.close()
         for task in self.tasks:
             task.cancel()
 
@@ -607,8 +612,8 @@ class BoundedTCPServer:
 async def serve_tcp(manager, address, context, *, kind="tcp", ech=False):
     loop = asyncio.get_running_loop()
     infos = await loop.getaddrinfo(*address, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
-    family, kind, proto, _, local = infos[0]
-    listener = socket.socket(family, kind, proto)
+    family, socket_kind, proto, _, local = infos[0]
+    listener = socket.socket(family, socket_kind, proto)
     try:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
