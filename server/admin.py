@@ -21,7 +21,7 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from server.config import APP_FILES, SERVER_FILES, BASE, COMMAND, ETC, MARKER, PROTOCOL, UNIT, address, load, unit_text, validate
+from server.config import APP_FILES, SERVER_FILES, BASE, COMMAND, ETC, MARKER, PROTOCOL, SERVER_VERSION, UNIT, address, load, unit_text, validate
 from server import clients
 from client_config import encode
 
@@ -37,7 +37,7 @@ def paint(text, code):
 
 def banner(title="Сервер для Debian 13"):
     print("\n" + paint("MYOWNVPN", "1;36") + "  /  " + title)
-    print(paint(f"IP без SNI · TLS 1.3 / QUIC · протокол v{PROTOCOL}", "2"))
+    print(paint(f"Сервер {SERVER_VERSION} · IP без SNI · TLS 1.3 / QUIC · протокол v{PROTOCOL}", "2"))
     print(paint("─" * min(64, shutil.get_terminal_size((64, 24)).columns - 1), "2"))
 
 
@@ -132,7 +132,8 @@ def verify_package(source):
     manifest = json.loads((source / "MANIFEST.json").read_text(encoding="utf-8"))
     expected = set(APP_FILES + SERVER_FILES + ("install.sh",))
     if (not isinstance(manifest, dict) or manifest.get("format") != 1 or
-            manifest.get("protocol") != PROTOCOL or not isinstance(manifest.get("sha256"), dict) or
+            manifest.get("protocol") != PROTOCOL or manifest.get("server_version") != SERVER_VERSION
+            or not isinstance(manifest.get("sha256"), dict) or
             set(manifest["sha256"]) != expected):
         raise ValueError("Неполный пакет сервера. Соберите архив через server/build.py.")
     for name, digest in manifest["sha256"].items():
@@ -367,6 +368,12 @@ def health_check(release=None):
 
 def install(args, update=False):
     host_check(not args.no_start)
+    from server.updater import installation_lock
+    with installation_lock():
+        return _install(args, update)
+
+
+def _install(args, update=False):
     source = verify_package(args.source or ROOT)
     exists = (ETC / "server.json").exists()
     if exists and not update:
@@ -406,6 +413,7 @@ def install(args, update=False):
 
 def status(doctor=False):
     banner("Состояние сервера")
+    row("Версия сервера", SERVER_VERSION)
     if not (ETC / "server.json").is_file():
         print("  Сервер не установлен. Выберите установку из архива Debian 13.\n")
         return
@@ -652,6 +660,40 @@ def uninstall():
     print("\n  Служба удалена. Данные сохранены в /etc/myownvpn и /opt/myownvpn.\n")
 
 
+def online_update(args, *, check_only=False):
+    from server import updater
+    if not (ETC / "server.json").is_file():
+        raise ValueError("Сначала установите сервер")
+    banner("Обновление сервера")
+    row("Установлено", SERVER_VERSION)
+    print("\n  Проверяем выпуски GitHub…", flush=True)
+    release = updater.latest()
+    row("Доступно", release.version + (" · предварительный выпуск" if release.prerelease else ""))
+    if updater.version(release.version) <= updater.version(SERVER_VERSION):
+        print("\n  Установлена актуальная версия сервера.\n")
+        return False
+    if check_only:
+        print("\n  Для установки выберите пункт 9 меню или sudo myownvpn upgrade.\n")
+        return False
+    print("\n  Скачиваем серверный пакет и проверяем SHA-256 и каждый файл…", flush=True)
+    with tempfile.TemporaryDirectory(prefix="myownvpn-update-", dir="/var/tmp") as temporary:
+        source = updater.stage(release, pathlib.Path(temporary) / "package")
+        row("Пакет проверен", release.version)
+        print("\n  Ключи, клиенты, настройки и счётчики сохранятся.")
+        print("  Установка перезапустит службу и завершит текущие соединения.")
+        if not args.yes and not yes("Установить обновление?"):
+            print("\n  Установка отменена. Сервер продолжает работать.\n")
+            return False
+        command = ["/usr/bin/python3", "-I", str(source / "server/admin.py"), "update", "--source", str(source), "--yes"]
+        if args.no_start:
+            command.append("--no-start")
+        result = subprocess.run(command)
+        if result.returncode:
+            raise RuntimeError("Обновление не завершено. Проверьте sudo myownvpn status и журнал установки; при ошибке активации установщик восстанавливает прежнюю версию")
+    print(f"\n  Сервер обновлён до {release.version}. Откройте sudo myownvpn заново.\n")
+    return True
+
+
 def menu(args):
     while True:
         banner()
@@ -659,7 +701,7 @@ def menu(args):
         row("Установка", "есть" if installed else "не выполнена")
         print("\n  1  Установить сервер\n  2  Состояние и проверка\n  3  Журнал соединений")
         print("  4  Включить / выключить SRTL\n  5  Клиенты · создать, конфигурация, трафик, удалить")
-        print("  6  Запустить / остановить службу\n  7  Перезапустить службу\n  8  Удалить службу\n  0  Выйти\n")
+        print("  6  Запустить / остановить службу\n  7  Перезапустить службу\n  8  Удалить службу\n  9  Проверить обновление и обновить\n  0  Выйти\n")
         choice = ask("Выберите действие", "0")
         try:
             if choice == "0":
@@ -681,6 +723,9 @@ def menu(args):
                     run(("systemctl", "restart", "myownvpn.service"))
             elif choice == "8":
                 uninstall()
+            elif choice == "9":
+                if online_update(args):
+                    return  # Continue only in the newly installed management program.
             else:
                 print("  Выберите номер из меню.")
         except (OSError, ValueError, RuntimeError) as exc:
@@ -692,7 +737,7 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description="Myownvpn server · Debian 13 · terminal only")
     parser.add_argument("command", nargs="?", default="menu",
-        choices=("menu", "install", "update", "status", "doctor", "logs", "start", "stop", "restart", "srtl", "export", "uninstall", "preview", "clients", "client-add", "client-show", "client-delete"))
+        choices=("menu", "install", "update", "upgrade", "check-update", "status", "doctor", "logs", "start", "stop", "restart", "srtl", "export", "uninstall", "preview", "clients", "client-add", "client-show", "client-delete"))
     parser.add_argument("--client", help="ID клиента из списка")
     parser.add_argument("--name", help="Имя нового клиента")
     parser.add_argument("value", nargs="?", choices=("on", "off"))
@@ -717,6 +762,8 @@ def main():
         install(args, update=args.command == "update")
     elif args.command == "menu":
         menu(args)
+    elif args.command in ("upgrade", "check-update"):
+        online_update(args, check_only=args.command == "check-update")
     elif args.command in ("status", "doctor"):
         status(doctor=args.command == "doctor")
     elif args.command == "srtl":

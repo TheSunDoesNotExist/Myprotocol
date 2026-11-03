@@ -12,7 +12,7 @@ import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from server.config import APP_FILES, SERVER_FILES, PROTOCOL
+from server.config import APP_FILES, SERVER_FILES, PROTOCOL, SERVER_VERSION
 
 
 def refresh_lock():
@@ -41,7 +41,7 @@ def build(output):
         if source.is_symlink():
             raise ValueError(f"Source file cannot be a symlink: {source}")
         files[name] = source.read_text(encoding="utf-8").replace("\r\n", "\n").encode()
-    manifest = {"format": 1, "protocol": PROTOCOL,
+    manifest = {"format": 1, "protocol": PROTOCOL, "server_version": SERVER_VERSION,
                 "sha256": {name: hashlib.sha256(data).hexdigest() for name, data in sorted(files.items())}}
     files["MANIFEST.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
     prefix = f"myownvpn-server-debian13-v{PROTOCOL}"

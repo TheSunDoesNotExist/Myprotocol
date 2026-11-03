@@ -19,9 +19,11 @@ SRTL (Slightly Random Traffic Length) по умолчанию выключен. 
 ## Сервер на Debian 13
 
 Для VPS есть отдельный терминальный установщик: [инструкция](server/README.md).
-Готовый архив и SHA-256: [GitHub Release для Debian 13](https://github.com/TheSunDoesNotExist/Myprotocol/releases/tag/clients-v0.2.0).
+Готовый архив и SHA-256: [GitHub Release для Debian 13](https://github.com/TheSunDoesNotExist/Myprotocol/releases/tag/server-v0.2.1).
 Он готовит Python 3.13/venv, IP-сертификат, отдельного пользователя и службу systemd.
 Ключи передаются службе через systemd credentials, SRTL переключается без рестарта.
+В меню пункт 9 проверяет и устанавливает новые серверные выпуски с GitHub;
+подробнее — [обновление сервера](server/README.md#обновление-и-удаление).
 Архив собирается командой `python server/build.py` в `.local/dist/`;
 локальные ключи, журналы, тесты и экспериментальный ECH-бинарник в него не включаются.
 
