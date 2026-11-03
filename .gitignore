@@ -16,3 +16,5 @@ access-key
 ca-password
 native/ech-gateway
 native/ech-gateway.exe
+*.dpapi
+profiles.json

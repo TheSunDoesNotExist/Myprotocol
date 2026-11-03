@@ -34,8 +34,11 @@ CLEANUPS = set()
 
 
 async def shutdown_channels():
-    while CLEANUPS:
-        batch = list(CLEANUPS)
+    loop = asyncio.get_running_loop()
+    while True:
+        batch = [task for task in list(CLEANUPS) if task.get_loop() is loop]
+        if not batch:
+            return
         await asyncio.gather(*batch, return_exceptions=True)
         # Python 3.14 gather can return immediately for completed tasks, before
         # their discard callbacks run. Remove them here to avoid a busy loop.
@@ -132,8 +135,22 @@ class SecureWriter:
             self.protocol.send_changed.set()
             self.protocol.transmit()
             self.cleanup = asyncio.create_task(self.finish_quic())
-            CLEANUPS.add(self.cleanup)
-            self.cleanup.add_done_callback(CLEANUPS.discard)
+        else:
+            # GUI clients can retire their event loop immediately after stop.
+            # Keep SSL shutdown alive until the underlying TCP socket is closed.
+            self.cleanup = asyncio.create_task(self.finish_tcp())
+        CLEANUPS.add(self.cleanup)
+        self.cleanup.add_done_callback(CLEANUPS.discard)
+
+    async def finish_tcp(self):
+        try:
+            await asyncio.wait_for(self.writer.wait_closed(), 1.5)
+        except (OSError, TimeoutError):
+            self.writer.transport.abort()
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            self.writer.transport.abort()
+            raise
 
     async def finish_quic(self):
         try:
@@ -150,11 +167,10 @@ class SecureWriter:
                 await self.protocol.cleanup_socket()
 
     async def wait_closed(self):
-        if self.protocol:
-            if self.cleanup:
-                await asyncio.shield(self.cleanup)
-            else:
-                await self.protocol.wait_closed()
+        if self.cleanup:
+            await asyncio.shield(self.cleanup)
+        elif self.protocol:
+            await self.protocol.wait_closed()
         else:
             await self.writer.wait_closed()
 
