@@ -366,6 +366,7 @@ class Window(QMainWindow):
         self.log_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.log_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.log_table.setAlternatingRowColors(True)
+        self.log_table.setWordWrap(False)
         self.log_table.verticalHeader().hide()
         self.log_table.verticalHeader().setDefaultSectionSize(36)
         header = self.log_table.horizontalHeader()
@@ -632,7 +633,7 @@ class Window(QMainWindow):
             try:
                 data = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in self.logs)
                 write_private(path, data.encode())
-            except OSError:
+            except (OSError, ValueError):
                 QMessageBox.warning(self, "Журнал не сохранён", "Выберите доступный для записи каталог")
 
     def closeEvent(self, event):

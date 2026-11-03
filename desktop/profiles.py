@@ -122,7 +122,8 @@ def import_package(path):
         key = valid_key(files["access-key"].decode("ascii").strip())
         identity = hashlib.sha256((host + ":" + str(port) + ":" + fingerprint).encode()).hexdigest()[:24]
         return Imported(Profile(identity, host, host, port, fingerprint, srtl), files["ca-cert.pem"], key)
-    except (tarfile.TarError, gzip.BadGzipFile, zlib.error, EOFError, UnicodeError, KeyError, x509.ExtensionNotFound):
+    except (tarfile.TarError, gzip.BadGzipFile, zlib.error, EOFError, UnicodeError, KeyError,
+            RecursionError, x509.ExtensionNotFound, x509.DuplicateExtension):
         raise ValueError("Не удалось прочитать клиентский пакет v5") from None
 
 
@@ -145,7 +146,10 @@ class Profiles:
         if not path.exists():
             return []
         with path.open(encoding="utf-8") as source:
-            data = json.loads(source.read(64 * 1024 + 1))
+            try:
+                data = json.loads(source.read(64 * 1024 + 1))
+            except RecursionError:
+                raise ValueError("Неверный список профилей") from None
         if not isinstance(data, list) or len(data) > 32:
             raise ValueError("Неверный список профилей")
         profiles = []

@@ -94,6 +94,11 @@ class ClientProfileTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     import_package(self.archive)
 
+    def test_deeply_nested_package_metadata_is_a_controlled_error(self):
+        make_package(self.archive, self.ca, extra={"client.json": ("[" * 2000 + "]" * 2000).encode()})
+        with self.assertRaises(ValueError):
+            import_package(self.archive)
+
     def test_profile_rejects_filesystem_escape_and_malformed_metadata(self):
         store = Profiles(self.root / "profiles")
         profile = import_package(self.archive).profile
