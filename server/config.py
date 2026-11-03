@@ -11,9 +11,9 @@ COMMAND = pathlib.Path("/usr/local/sbin/myownvpn")
 MARKER = "# Managed by Myownvpn Debian installer"
 PROTOCOL = 5
 APP_FILES = ("tunnel.py", "transports.py", "http_carrier.py", "selection.py", "diagnostics.py",
-             "srtl.py", "ech_gateway.py", "ip_cert.py")
+             "srtl.py", "ech_gateway.py", "ip_cert.py", "client_config.py")
 SERVER_FILES = ("server/admin.py", "server/config.py", "server/runtime.py", "server/identity.py",
-                "server/requirements.lock", "server/README.md")
+                "server/requirements.lock", "server/README.md", "server/clients.py")
 
 
 def validate(data):
@@ -78,7 +78,7 @@ Restart=on-failure
 RestartSec=3
 TimeoutStopSec=15
 KillSignal=SIGTERM
-LoadCredential=access-key:/etc/myownvpn/credentials/access-key
+LoadCredential=access-key:/etc/myownvpn/credentials/health-key
 LoadCredential=server-cert.pem:/etc/myownvpn/credentials/server-cert.pem
 LoadCredential=server-key.pem:/etc/myownvpn/credentials/server-key.pem
 StateDirectory=myownvpn

@@ -15,14 +15,14 @@ import sys
 from PySide6.QtCore import QTimer, Qt, QPointF, QRectF
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPainterPath, QPen, QPalette
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCheckBox,
-    QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSpinBox, QStackedWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget)
 
 from desktop import VERSION
 from desktop.engine import Engine, setup_logging
-from desktop.profiles import Profiles, import_package, write_private
+from desktop.profiles import Profiles, import_package, import_text, write_private
 from desktop.vault import Vault, VaultError
 
 ACCENT = "#65d6bf"
@@ -234,6 +234,8 @@ class Window(QMainWindow):
         self.import_button = button("Импортировать пакет", self.import_dialog)
         self.import_button.setToolTip("Клиентский tar.gz, созданный командой myownvpn export на сервере")
         side.addWidget(self.import_button)
+        self.paste_button = button("Вставить конфигурацию", self.paste_dialog)
+        side.addWidget(self.paste_button)
         side.addSpacing(12)
         side.addWidget(label(f"Клиент {VERSION} · протокол v5", "muted"))
         side.addWidget(label("TLS 1.3 · IP без SNI", "muted"))
@@ -462,11 +464,39 @@ class Window(QMainWindow):
         if path:
             self.begin_import(path)
 
-    def begin_import(self, path):
+    def paste_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Добавить подключение")
+        dialog.resize(620, 340)
+        layout = QVBoxLayout(dialog)
+        label = QLabel("Вставьте конфигурацию myownvpn://, созданную на сервере")
+        layout.addWidget(label)
+        editor = QPlainTextEdit()
+        editor.setAccessibleName("Конфигурация подключения")
+        editor.setMaximumBlockCount(64)
+        label.setBuddy(editor)
+        layout.addWidget(editor)
+        hint = QLabel("Конфигурация содержит секретный ключ. Передавайте её только доверенному человеку.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
+        buttons.addButton("Добавить", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        editor.setFocus()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            text = editor.toPlainText()
+            editor.clear()
+            self.begin_import(text, pasted=True)
+        editor.clear()
+
+    def begin_import(self, path, *, pasted=False):
         if self.pending or self.engine.running:
             return
         def work():
-            imported = import_package(path)
+            imported = import_text(path) if pasted else import_package(path)
             if len(self.profiles) >= 32 and all(p.id != imported.profile.id for p in self.profiles):
                 raise ValueError("Можно сохранить не более 32 профилей")
             self.store.install_ca(imported)
@@ -503,6 +533,7 @@ class Window(QMainWindow):
         busy = self.engine.running or self.pending is not None
         self.profile_list.setEnabled(not busy)
         self.import_button.setEnabled(not busy)
+        self.paste_button.setEnabled(not busy)
         self.local_port.setEnabled(not busy and self.profile is not None)
         self.transport.setEnabled(not busy and self.profile is not None)
         self.srtl.setEnabled(self.profile is not None and self.pending is None)

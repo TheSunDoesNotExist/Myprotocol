@@ -154,6 +154,7 @@ class StateAudit(unittest.IsolatedAsyncioTestCase):
         session = tunnel.Session(target=("127.0.0.1", 1))
         session.generation = 1
         manager = tunnel.Server("a" * 64, session.target)
+        session.client_id = "legacy"
         manager.sessions[session.sid] = session
         release, hold = asyncio.Event(), asyncio.Event()
         tasks = []

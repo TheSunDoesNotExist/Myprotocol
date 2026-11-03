@@ -59,6 +59,17 @@ class DesktopGuiTests(DesktopServerCase):
         self.assertGreater(self.window.local_port.lineEdit().width(), 60)
         self.assertEqual(self.window.status.text(), "Отключено")
 
+    async def test_pasted_configuration_uses_vault_and_preserves_client_name(self):
+        from client_config import encode
+        text = encode(f"127.0.0.1:{self.port}", self.files["ca-cert.pem"].read_bytes(), "a" * 64, "Мой ПК")
+        with patch.object(self.window.vault, "save") as save:
+            self.window.begin_import(text, pasted=True)
+            await self.wait_ui(lambda: self.window.pending is None)
+        self.assertEqual(self.window.profile.name, "Мой ПК")
+        save.assert_called_once_with(self.window.profile.id, "a" * 64)
+        self.assertTrue(self.window.connect_button.isEnabled())
+        self.assertTrue(self.window.paste_button.isEnabled())
+
     async def test_import_connect_srtl_and_disconnect_with_real_tunnel(self):
         archive = pathlib.Path(self.temp.name) / "client.tar.gz"
         make_package(archive, self.files["ca-cert.pem"].read_bytes(), server=f"127.0.0.1:{self.port}")

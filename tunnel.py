@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import base64
 import contextlib
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -682,6 +683,44 @@ class Server:
         self.sessions = {}
         self.connections = {}
         self.closed = False
+        self.clients = None  # None retains the standalone CLI's single-key mode.
+        self.usage = {}
+
+    def authenticate(self, key, *, probe=True):
+        if not isinstance(key, str) or len(key) != 64 or not key.isascii():
+            return None
+        if self.clients is None:
+            return "legacy" if hmac.compare_digest(key, self.key) else None
+        identity = self.clients.get(hashlib.sha256(key.encode("ascii")).hexdigest())
+        if identity is not None:
+            return identity
+        # The installation credential may check health, but can never open a session.
+        if probe and hmac.compare_digest(key, self.key):
+            return "__health__"
+        return None
+
+    def collect_usage(self):
+        for session in self.sessions.values():
+            identity = getattr(session, "client_id", None)
+            if identity is None:
+                continue
+            previous = getattr(session, "accounted", (0, 0))
+            current = session.rx_bytes, session.tx_bytes
+            totals = self.usage.setdefault(identity, [0, 0])
+            totals[0] += current[0] - previous[0]
+            totals[1] += current[1] - previous[1]
+            session.accounted = current
+
+    def set_clients(self, clients):
+        """Replace the hash->identity allowlist atomically in the event loop."""
+        self.collect_usage()
+        old = self.clients or {}
+        self.clients = dict(clients)
+        for session in self.sessions.values():
+            digest = getattr(session, "client_digest", None)
+            if digest is not None and clients.get(digest) != session.client_id:
+                session.close("client_revoked")
+        event("client_access_updated", clients=len(clients), revoked=len(set(old) - set(clients)))
 
     def set_srtl(self, enabled):
         if type(enabled) is not bool:
@@ -713,7 +752,7 @@ class Server:
                 deadline = getattr(writer, "auth_deadline", asyncio.get_running_loop().time() + AUTH_TIMEOUT)
                 async with asyncio.timeout_at(deadline):
                     if not getattr(writer, "carrier_ready", False):
-                        if not await accept_http(reader, writer, self.key):
+                        if not await accept_http(reader, writer, self.authenticate):
                             return
                 writer.authenticated = True
             event("secure_connection", path=kind, tls="TLSv1.3",
@@ -723,9 +762,9 @@ class Server:
             for _ in range(4):
                 hello = await asyncio.wait_for(read_frame(reader), 5)
                 key = hello.get("key")
+                client_id = self.authenticate(key, probe=hello.get("type") == "probe")
                 if (hello["type"] not in {"hello", "probe"} or hello.get("version") != VERSION
-                        or not isinstance(key, str) or not key.isascii()
-                        or not hmac.compare_digest(key, self.key)):
+                        or client_id is None):
                     await write_frame(writer, dict(type="rejected"))
                     raise SecurityError("authentication_failed")
                 if protocol:
@@ -740,12 +779,15 @@ class Server:
             else:
                 return
             generation = integer(hello.get("generation"), 1)
+            self.collect_usage()
             self.sessions = {sid: s for sid, s in self.sessions.items() if not s.closed}
             sid = hello.get("session")
             if sid is None:
                 if len(self.sessions) >= MAX_SESSIONS:
                     raise ProtocolError("session limit reached")
                 session = Session(target=self.target, grace=self.grace, srtl=self.srtl)
+                session.client_id = client_id
+                session.client_digest = hashlib.sha256(key.encode("ascii")).hexdigest()
                 self.sessions[session.sid] = session
                 new_session = session
             else:
@@ -753,7 +795,8 @@ class Server:
                     raise ProtocolError("invalid session ID")
                 session = self.sessions.get(sid)
                 secret = hello.get("secret")
-                if (session is None or (session.detached_at is not None
+                if (session is None or getattr(session, "client_id", None) != client_id
+                        or (session.detached_at is not None
                         and time.monotonic() - session.detached_at >= session.grace)
                         or not isinstance(secret, str) or not secret.isascii()
                         or not hmac.compare_digest(secret, session.secret)):
@@ -786,6 +829,7 @@ class Server:
                       reason="superseded_commit", generation=generation)
                 return
             session.attach(writer, transport_id)
+            event("client_connected", client=client_id, session=tag(session.sid), path=kind)
             committed = True
             await session.run_transport(reader, writer)
         except (ProtocolError, SecurityError, OSError, TimeoutError,

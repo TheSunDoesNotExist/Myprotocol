@@ -11,8 +11,31 @@ sys.path.insert(0, str(ROOT))  # -I; installed code is root-owned, never service
 
 from diagnostics import configure, event
 from server.config import ETC, PROTOCOL, load
+from server import clients
 from transports import quic_config, serve_tcp, serve_udp, shutdown_channels, tls_server
 from tunnel import VERSION, Server
+
+
+async def watch_clients(manager, registry, usage):
+    revision = None
+    invalid = False
+    try:
+        while True:
+            try:
+                data = clients.load(registry)
+                allowed = {c["key_hash"]: c["id"] for c in data["clients"]}
+                if invalid or revision != data["revision"] or manager.clients != allowed:
+                    manager.set_clients(allowed)
+                    revision, invalid = data["revision"], False
+            except (OSError, ValueError):
+                if not invalid:
+                    manager.set_clients({})
+                    event("client_registry_rejected", reason="invalid_or_missing", action="all_clients_disconnected")
+                revision, invalid = None, True
+            usage.flush(manager, revision)
+            await asyncio.sleep(.5)
+    finally:
+        usage.flush(manager, revision)
 
 
 async def serve(config_path=ETC / "server.json"):
@@ -25,6 +48,10 @@ async def serve(config_path=ETC / "server.json"):
         raise ValueError("Invalid access-key credential")
     cert, private = credentials / "server-cert.pem", credentials / "server-key.pem"
     manager = Server(key, tuple(cfg["target"]), cfg["grace"], srtl=cfg["srtl"])
+    registry = pathlib.Path(config_path).parent / "clients.json"
+    data = clients.load(registry)  # No legacy fallback if the allowlist disappears.
+    manager.set_clients({c["key_hash"]: c["id"] for c in data["clients"]})
+    usage = clients.Usage("/var/lib/myownvpn/usage.sqlite")
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -45,7 +72,7 @@ async def serve(config_path=ETC / "server.json"):
     loop.add_signal_handler(signal.SIGHUP, reload_srtl)
     tcp = udp = None
     udp_tasks = set()
-    acceptor = waiter = None
+    acceptor = waiter = monitor = None
     try:
         tcp = await serve_tcp(manager, (cfg["listen"], cfg["port"]), tls_server(cert, private))
         if cfg["transport"] != "tcp":
@@ -53,7 +80,10 @@ async def serve(config_path=ETC / "server.json"):
         event("server_started", mode=cfg["transport"], srtl=cfg["srtl"], tls="TLSv1.3")
         acceptor = asyncio.create_task(tcp.serve_forever())
         waiter = asyncio.create_task(stop.wait())
-        done, _ = await asyncio.wait((acceptor, waiter), return_when=asyncio.FIRST_COMPLETED)
+        monitor = asyncio.create_task(watch_clients(manager, registry, usage))
+        done, _ = await asyncio.wait((acceptor, waiter, monitor), return_when=asyncio.FIRST_COMPLETED)
+        if monitor in done:
+            await monitor  # Accounting/registry-monitor failure closes the server.
         if acceptor in done:
             await acceptor
     finally:
@@ -63,11 +93,13 @@ async def serve(config_path=ETC / "server.json"):
             await tcp.wait_closed()
         if udp:
             await udp.aclose()
-        for task in [*udp_tasks, *[t for t in (acceptor, waiter) if t]]:
+        for task in [*udp_tasks, *[t for t in (acceptor, waiter, monitor) if t]]:
             task.cancel()
-        await asyncio.gather(*udp_tasks, *[t for t in (acceptor, waiter) if t], return_exceptions=True)
+        await asyncio.gather(*udp_tasks, *[t for t in (acceptor, waiter, monitor) if t], return_exceptions=True)
         await manager.wait_closed()
         await shutdown_channels()
+        usage.flush(manager, None)
+        usage.close()
 
 
 if __name__ == "__main__":

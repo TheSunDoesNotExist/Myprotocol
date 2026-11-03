@@ -92,9 +92,13 @@ class ServerInstallerTests(unittest.TestCase):
             (root / "ca-key.pem").write_bytes(b"PRIVATE CA KEY")
             output = root / "client.tar.gz"
             with patch.object(admin, "ETC", root), patch.object(admin, "load", return_value=example()), contextlib.redirect_stdout(io.StringIO()):
-                admin.export_client(output)
+                # Migrated shared keys are now an explicitly selected revocable client.
+                data = admin.ensure_clients()
+                with patch("server.clients.locked", side_effect=lambda _: contextlib.nullcontext()):
+                    admin.export_client(output, data["clients"][0]["id"])
                 with self.assertRaises(FileExistsError):
-                    admin.export_client(output)
+                    with patch("server.clients.locked", side_effect=lambda _: contextlib.nullcontext()):
+                        admin.export_client(output, data["clients"][0]["id"])
             with tarfile.open(output) as bundle:
                 self.assertEqual(set(bundle.getnames()), {"ca-cert.pem", "access-key", "client.json", "CONNECT.txt"})
                 self.assertTrue(all(v.mode == 0o600 for v in bundle.getmembers()))
@@ -133,8 +137,9 @@ class ServerInstallerTests(unittest.TestCase):
                     success = updating if args[1] == "is-enabled" else active if args[1] == "is-active" else True
                     return argparse.Namespace(returncode=0 if success else 1)
                 account = argparse.Namespace(pw_uid=1001, pw_gid=1001, pw_shell="/usr/sbin/nologin")
+                (root / "clients.json").write_text(json.dumps(admin.clients.empty()))
                 with patch.multiple(admin, BASE=root, UNIT=unit, COMMAND=command,
-                                    STATE_DIR=root / "state", LOG_DIR=root / "log"), patch.object(pwd, "getpwnam", return_value=account), patch.object(admin.os, "chown"), patch.object(admin, "run", side_effect=run) as invoked, patch.object(admin, "health_check", side_effect=RuntimeError("health failure")), contextlib.redirect_stdout(io.StringIO()):
+                                    STATE_DIR=root / "state", LOG_DIR=root / "log", ETC=root), patch.object(pwd, "getpwnam", return_value=account), patch.object(admin.os, "chown"), patch.object(admin, "run", side_effect=run) as invoked, patch.object(admin, "health_check", side_effect=RuntimeError("health failure")), contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaisesRegex(RuntimeError, "health failure"):
                         admin.activate(release, example())
                 if updating:

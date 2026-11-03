@@ -161,6 +161,8 @@ class DesktopServerCase(unittest.IsolatedAsyncioTestCase):
                 while data := await reader.read(65536):
                     writer.write(data)
                     await writer.drain()
+            except ConnectionError:
+                pass  # Revocation deliberately aborts an application connection.
             finally:
                 writer.close()
                 with contextlib.suppress(OSError):

@@ -19,7 +19,7 @@ SRTL (Slightly Random Traffic Length) по умолчанию выключен. 
 ## Сервер на Debian 13
 
 Для VPS есть отдельный терминальный установщик: [инструкция](server/README.md).
-Готовый архив и SHA-256: [GitHub Release для Debian 13](https://github.com/TheSunDoesNotExist/Myprotocol/releases/tag/debian13-v5-20261103).
+Готовый архив и SHA-256: [GitHub Release для Debian 13](https://github.com/TheSunDoesNotExist/Myprotocol/releases/tag/clients-v0.2.0).
 Он готовит Python 3.13/venv, IP-сертификат, отдельного пользователя и службу systemd.
 Ключи передаются службе через systemd credentials, SRTL переключается без рестарта.
 Архив собирается командой `python server/build.py` в `.local/dist/`;
@@ -36,17 +36,21 @@ sudo bash install.sh
 
 ## Клиент Windows и Fedora 44
 
-Есть нативное приложение с импортом клиентского пакета, автоматическим выбором
+Есть нативное приложение со вставкой конфигурации, импортом клиентского пакета, автоматическим выбором
 TCP/UDP, переключением SRTL, показателями канала и журналом событий.
-[Инструкция клиента](desktop/README.md) · [Сборки](https://github.com/TheSunDoesNotExist/Myprotocol/releases/tag/client-v0.1.0).
+[Инструкция клиента](desktop/README.md) · [Сборки](https://github.com/TheSunDoesNotExist/Myprotocol/releases/tag/clients-v0.2.0).
 
 Windows x86_64: распакуйте ZIP целиком и запустите `Myownvpn.exe`.
 Fedora 44 x86_64: установите RPM через `sudo dnf install ./myownvpn-client-*.rpm`.
 Python включён в нативные пакеты. Ключ хранится через Windows DPAPI или Secret
 Service Fedora; приложение работает от обычного пользователя.
 
-На сервере выполните `sudo myownvpn export`, передайте полученный **секретный**
-архив через SCP и импортируйте его в клиент. Публикуемые программные пакеты
+На сервере откройте `sudo myownvpn` → пункт 5 «Клиенты» → «Создать клиента».
+Скопируйте строку `myownvpn://…` и добавьте её в приложении кнопкой «Вставить конфигурацию».
+Строка содержит персональный секретный ключ. На сервере доступны список клиентов,
+трафик в обоих направлениях и удаление с закрытием сессий и отзывом доступа TCP/UDP.
+При обновлении прежний общий ключ сохраняется как отдельный удаляемый клиент.
+Публикуемые программные пакеты
 ключей доступа не содержат. Клиент сохраняет текущую модель локального TCP-порта;
 системную маршрутизацию ОС он не включает.
 

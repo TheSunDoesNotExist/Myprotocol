@@ -22,6 +22,8 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from server.config import APP_FILES, SERVER_FILES, BASE, COMMAND, ETC, MARKER, PROTOCOL, UNIT, address, load, unit_text, validate
+from server import clients
+from client_config import encode
 
 LOG = pathlib.Path("/var/log/myownvpn-install.log")
 STATE_DIR = pathlib.Path("/var/lib/myownvpn")
@@ -82,7 +84,7 @@ def host_check(require_manager=True):
             raise ValueError(f"Путь {path} должен принадлежать root и быть закрыт для записи другим пользователям.")
 
 
-def atomic_write(path, data, mode=0o600):
+def atomic_write(path, data, mode=0o600, *, group=None):
     path = pathlib.Path(path)
     if path.is_symlink():
         raise ValueError(f"Отказ от записи через символическую ссылку: {path}")
@@ -92,6 +94,8 @@ def atomic_write(path, data, mode=0o600):
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
         with os.fdopen(fd, "wb") as output:
             if os.name == "posix":
+                if group is not None:
+                    os.fchown(output.fileno(), 0, group)
                 os.fchmod(output.fileno(), mode)
             else:
                 temp.chmod(mode)
@@ -225,7 +229,7 @@ def make_release(source):
 
 def private_file(path):
     path = pathlib.Path(path)
-    if not path.is_file() or path.stat().st_mode & 0o077:
+    if path.is_symlink() or not path.is_file() or os.name == "posix" and path.stat().st_mode & 0o077:
         raise ValueError("Файл с секретом должен существовать и иметь права 600 или 400.")
     return path.read_bytes()
 
@@ -266,6 +270,11 @@ def credentials(release, cfg, args):
             for name in ("server-cert.pem", "server-key.pem"):
                 atomic_write(staged / "credentials" / name, (temp / name).read_bytes())
             atomic_write(staged / "credentials/access-key", key + "\n")
+            atomic_write(staged / "credentials/health-key", secrets.token_hex(32) + "\n")
+            first = clients.record("Первый клиент", key)
+            atomic_write(staged / "clients.json", json.dumps(dict(clients.empty(), clients=[first])) + "\n")
+            atomic_write(staged / "credentials/clients" / first["id"], key + "\n")
+            atomic_write(staged / "credentials/clients-enabled", "1\n")
             atomic_write(staged / "ca-cert.pem", (temp / "ca-cert.pem").read_bytes(), 0o644)
             atomic_write(staged / "identity-info.json", json.dumps(info, indent=2) + "\n", 0o644)
             atomic_write(staged / "server.json", json.dumps(cfg, indent=2) + "\n", 0o644)
@@ -297,6 +306,10 @@ def activate(release, cfg, no_start=False):
         os.chown(path, account.pw_uid, account.pw_gid)
     if UNIT.exists() and MARKER not in UNIT.read_text():
         raise ValueError("Существующая systemd-служба не принадлежит этому установщику.")
+    with clients.locked(ETC):
+        ensure_clients()
+        os.chown(ETC / "clients.json", 0, account.pw_gid)
+        (ETC / "clients.json").chmod(0o640)
     old_link = os.readlink(BASE / "current") if (BASE / "current").is_symlink() else None
     old_unit = UNIT.read_bytes() if UNIT.exists() else None
     old_command = COMMAND.read_bytes() if COMMAND.exists() else None
@@ -343,7 +356,7 @@ def activate(release, cfg, no_start=False):
 def health_check(release=None):
     release = release or BASE / "current"
     command = (release / "venv/bin/python", "-I", release / "server/identity.py", "health", "--config", ETC / "server.json",
-               "--key", ETC / "credentials/access-key", "--ca", ETC / "ca-cert.pem")
+               "--key", ETC / "credentials/health-key", "--ca", ETC / "ca-cert.pem")
     for _ in range(3):
         result = run(command, check=False)
         if result.returncode == 0:
@@ -383,12 +396,12 @@ def install(args, update=False):
     step("6/6", "Готово" if not args.no_start else "Образ подготовлен; служба пока не запущена")
     row("Управление", "sudo myownvpn")
     row("Проверка", "sudo myownvpn doctor")
-    row("Клиентский пакет", "sudo myownvpn export")
+    row("Клиенты", "sudo myownvpn → 5 · создать и скопировать конфигурацию")
     row("Firewall", f"разрешите входящий {cfg['port']}/tcp" + (f" и {cfg['port']}/udp" if cfg["transport"] == "auto" else ""))
     if (ETC / "backup/ca-key.encrypted.pem").exists():
         print("\n  Зашифрованный ключ CA: /etc/myownvpn/backup/ca-key.encrypted.pem")
         print("  Сохраните его и ca-cert.pem вне VPS. Пароль не записан на сервер.")
-    print("\n  Ключ доступа скрыт; он войдёт только в закрытый клиентский пакет.\n")
+    print("\n  Для каждого клиента создаётся отдельный ключ. Удаление клиента отзывает доступ.\n")
 
 
 def status(doctor=False):
@@ -402,7 +415,7 @@ def status(doctor=False):
     row("Адрес", address(cfg["public_ips"][0], cfg["port"]))
     row("Назначение", address(*cfg["target"]))
     row("SRTL сервера", "включён" if cfg["srtl"] else "выключен")
-    row("Ключ доступа", "скрыт · systemd credentials")
+    row("Доступ клиентов", "отдельные ключи · отзыв без перезапуска")
     if (ETC / "identity-info.json").exists():
         info = json.loads((ETC / "identity-info.json").read_text())
         row("Сертификат до", info["expires"])
@@ -426,10 +439,173 @@ def change_srtl(value):
     print("\n  SRTL сервера " + ("включён" if cfg["srtl"] else "выключен") + ". Сессии сохранены.\n")
 
 
-def export_client(output=None):
+def save_clients(data):
+    clients.validate(data)
+    path = ETC / "clients.json"
+    group = path.stat().st_gid if path.exists() else None
+    # Keep the replacement private until its group and mode are set.
+    atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                 0o640 if group is not None and os.name == "posix" else 0o600, group=group)
+
+
+def ensure_clients():
+    path = ETC / "clients.json"
+    marker = ETC / "credentials/clients-enabled"
+    health = ETC / "credentials/health-key"
+    if not health.exists():
+        atomic_write(health, secrets.token_hex(32) + "\n")
+    if path.exists():
+        data = clients.load(path)
+        if not marker.exists():
+            atomic_write(marker, "1\n")
+        return data
+    if marker.exists():
+        raise ValueError("Реестр клиентов отсутствует. Восстановите clients.json из резервной копии; прежний ключ автоматически не включается")
+    # One-time upgrade: existing copied configurations remain one revocable client.
+    key = (ETC / "credentials/access-key").read_text().strip()
+    data = clients.empty()
+    item = clients.record("Прежний общий ключ", key)
+    data["clients"].append(item)
+    atomic_write(ETC / "credentials/clients" / item["id"], key + "\n")
+    save_clients(data)
+    atomic_write(marker, "1\n")
+    return data
+
+
+def client_key(item):
+    path = ETC / "credentials/clients" / item["id"]
+    key = private_file(path).decode("ascii").strip()
+    if clients.digest(key) != item["key_hash"]:
+        raise ValueError("Ключ клиента не соответствует реестру. Создайте нового клиента")
+    return key
+
+
+def find_client(data, identity):
+    item = next((c for c in data["clients"] if c["id"] == identity), None)
+    if item is None:
+        raise ValueError("Клиент не найден. Откройте список клиентов")
+    return item
+
+
+def wait_clients(revision):
+    if run(("systemctl", "is-active", "myownvpn.service"), capture=True, check=False).returncode:
+        return  # The next start reads the allowlist before opening a listener.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            _, _, applied, updated = clients.snapshot(STATE_DIR / "usage.sqlite")
+            if applied == revision and time.time() - updated < 3:
+                return
+        except (OSError, clients.sqlite3.Error):
+            pass
+        time.sleep(.1)
+    # Never report successful revocation while an old/unresponsive daemon has access.
+    result = run(("systemctl", "stop", "myownvpn.service"), check=False)
+    if result.returncode:
+        raise RuntimeError("Реестр сохранён, но отзыв не подтверждён и остановить службу не удалось. Немедленно проверьте службу")
+    raise RuntimeError("Реестр сохранён. Служба остановлена: применение доступа не подтверждено. Обновите сервер и запустите службу")
+
+
+def create_client(name):
+    with clients.locked(ETC):
+        data = clients.load(ETC / "clients.json")
+        if len(data["clients"]) >= clients.MAX_CLIENTS:
+            raise ValueError("Достигнут предел: 256 клиентов")
+        key = secrets.token_hex(32)
+        item = clients.record(name, key)
+        secret = ETC / "credentials/clients" / item["id"]
+        atomic_write(secret, key + "\n")
+        data["clients"].append(item)
+        data["revision"] = secrets.token_hex(16)
+        try:
+            save_clients(data)
+        except BaseException:
+            secret.unlink(missing_ok=True)
+            raise
+        wait_clients(data["revision"])
+    return item
+
+
+def show_client(identity):
+    data = clients.load(ETC / "clients.json")
+    item = find_client(data, identity)
+    cfg = load()
+    print("\n  " + item["name"] + " · " + item["id"])
+    print("  Скопируйте строку целиком → клиент → Вставить конфигурацию.")
+    print("  Секретный ключ внутри. Передавайте только приватно.\n")
+    print(encode(address(cfg["public_ips"][0], cfg["port"]), (ETC / "ca-cert.pem").read_bytes(), client_key(item), item["name"]))
+    print()
+
+
+def delete_client(identity):
+    with clients.locked(ETC):
+        data = clients.load(ETC / "clients.json")
+        find_client(data, identity)
+        data["clients"] = [c for c in data["clients"] if c["id"] != identity]
+        data["revision"] = secrets.token_hex(16)
+        save_clients(data)  # Revoke first; never roll access back on an acknowledgement error.
+        (ETC / "credentials/clients" / identity).unlink(missing_ok=True)
+        wait_clients(data["revision"])
+    print("\n  Клиент удалён. Его соединения закрыты, конфигурация больше не работает.\n")
+
+
+def list_clients():
+    data = clients.load(ETC / "clients.json")
+    try:
+        usage, active, _, updated = clients.snapshot(STATE_DIR / "usage.sqlite")
+    except clients.sqlite3.Error:
+        raise ValueError("Не удалось прочитать счётчики. Проверьте журнал сервера") from None
+    banner("Клиенты")
+    print("  Трафик полезных данных: ↑ от клиента, ↓ к клиенту. Без повторов и SRTL.")
+    if time.time() - updated >= 3:
+        print("  Статус соединений недоступен: сервер остановлен или данные устарели.")
+    for index, item in enumerate(data["clients"], 1):
+        up, down = usage.get(item["id"], (0, 0))
+        online = f"подключён · сессий {active[item['id']]}" if time.time() - updated < 3 and active.get(item["id"]) else "отключён"
+        row(f"{index}. {item['name']}", f"{online} · ↑ {up:,} Б · ↓ {down:,} Б")
+        row("ID", item["id"])
+    if not data["clients"]:
+        print("\n  Клиентов пока нет. Выберите «Создать клиента».")
+    return data
+
+
+def clients_menu():
+    while True:
+        data = list_clients()
+        print("\n  1  Создать клиента\n  2  Показать конфигурацию\n  3  Удалить клиента\n  0  Назад\n")
+        action = ask("Выберите действие", "0")
+        if action == "0":
+            return
+        if action == "1":
+            item = create_client(ask("Имя клиента", "Мой компьютер"))
+            show_client(item["id"])
+        elif action in ("2", "3"):
+            number = ask("Номер клиента")
+            if not number or not number.isdecimal() or not 1 <= int(number) <= len(data["clients"]):
+                print("  Выберите номер клиента из списка.")
+                continue
+            item = data["clients"][int(number) - 1]
+            if action == "2":
+                show_client(item["id"])
+            elif yes(f"Удалить «{item['name']}» и немедленно отключить его?"):
+                delete_client(item["id"])
+        input("\n  Enter — продолжить…")
+
+
+def export_client(output=None, identity=None):
     cfg = load()
     output = pathlib.Path(output or ("/root/myownvpn-client-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + ".tar.gz"))
-    files = {"ca-cert.pem": (ETC / "ca-cert.pem").read_bytes(), "access-key": (ETC / "credentials/access-key").read_bytes()}
+    with clients.locked(ETC):
+        data = clients.load(ETC / "clients.json")
+    if identity:
+        item = find_client(data, identity)
+    elif len(data["clients"]) == 1:
+        item = data["clients"][0]
+    elif data["clients"]:
+        raise ValueError("Выберите клиента: myownvpn export --client ID --output ФАЙЛ")
+    else:
+        item = create_client("Мой компьютер")
+    files = {"ca-cert.pem": (ETC / "ca-cert.pem").read_bytes(), "access-key": client_key(item).encode()}
     peer = address(cfg["public_ips"][0], cfg["port"])
     files["client.json"] = (json.dumps(dict(server=peer, protocol=PROTOCOL, ca="ca-cert.pem", srtl_client=False,
                                                  srtl_server=cfg["srtl"]), indent=2) + "\n").encode()
@@ -482,7 +658,7 @@ def menu(args):
         installed = (ETC / "server.json").exists()
         row("Установка", "есть" if installed else "не выполнена")
         print("\n  1  Установить сервер\n  2  Состояние и проверка\n  3  Журнал соединений")
-        print("  4  Включить / выключить SRTL\n  5  Экспортировать клиентский пакет")
+        print("  4  Включить / выключить SRTL\n  5  Клиенты · создать, конфигурация, трафик, удалить")
         print("  6  Запустить / остановить службу\n  7  Перезапустить службу\n  8  Удалить службу\n  0  Выйти\n")
         choice = ask("Выберите действие", "0")
         try:
@@ -497,7 +673,7 @@ def menu(args):
             elif choice == "4":
                 change_srtl("on" if yes("Включить SRTL отправки сервера?", load()["srtl"]) else "off")
             elif choice == "5":
-                export_client()
+                clients_menu()
             elif choice == "6":
                 run(("systemctl", "start" if yes("Запустить службу?", True) else "stop", "myownvpn.service"))
             elif choice == "7":
@@ -516,7 +692,9 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description="Myownvpn server · Debian 13 · terminal only")
     parser.add_argument("command", nargs="?", default="menu",
-        choices=("menu", "install", "update", "status", "doctor", "logs", "start", "stop", "restart", "srtl", "export", "uninstall", "preview"))
+        choices=("menu", "install", "update", "status", "doctor", "logs", "start", "stop", "restart", "srtl", "export", "uninstall", "preview", "clients", "client-add", "client-show", "client-delete"))
+    parser.add_argument("--client", help="ID клиента из списка")
+    parser.add_argument("--name", help="Имя нового клиента")
     parser.add_argument("value", nargs="?", choices=("on", "off"))
     parser.add_argument("--source", type=pathlib.Path)
     parser.add_argument("--public-ip", action="append")
@@ -546,7 +724,19 @@ def main():
             parser.error("для srtl укажите on или off")
         change_srtl(args.value)
     elif args.command == "export":
-        export_client(args.output)
+        export_client(args.output, args.client)
+    elif args.command == "clients":
+        list_clients()
+    elif args.command == "client-add":
+        item = create_client(args.name or ask("Имя клиента", "Мой компьютер"))
+        show_client(item["id"])
+    elif args.command in ("client-show", "client-delete"):
+        if not args.client:
+            parser.error("укажите --client ID из списка myownvpn clients")
+        if args.command == "client-show":
+            show_client(args.client)
+        elif args.yes or yes("Удалить клиента и немедленно отключить его?"):
+            delete_client(args.client)
     elif args.command == "logs":
         subprocess.run(("journalctl", "-u", "myownvpn.service", "-n", "80", "-f"))
     elif args.command == "uninstall":

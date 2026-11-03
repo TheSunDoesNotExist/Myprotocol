@@ -20,11 +20,17 @@ class CarrierRejected(Exception):
 
 
 def valid_authorization(value, key):
-    if not isinstance(value, bytes) or not isinstance(key, str):
+    if not isinstance(value, bytes):
         return False
     parts = value.split(None, 1)
-    return (len(parts) == 2 and parts[0].lower() == b"bearer"
-            and hmac.compare_digest(parts[1], key.encode("ascii")))
+    if len(parts) != 2 or parts[0].lower() != b"bearer":
+        return False
+    if callable(key):
+        try:
+            return key(parts[1].decode("ascii")) is not None
+        except UnicodeError:
+            return False
+    return isinstance(key, str) and hmac.compare_digest(parts[1], key.encode("ascii"))
 
 
 def header_map(headers):

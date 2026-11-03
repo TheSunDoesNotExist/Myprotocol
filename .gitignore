@@ -19,3 +19,5 @@ native/ech-gateway.exe
 *.dpapi
 profiles.json
 myownvpn-client-*.tar.gz
+clients.json
+usage.sqlite*

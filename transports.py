@@ -772,7 +772,7 @@ async def serve_udp(manager, address, config):
     tasks = set()
 
     def factory(*args, **kwargs):
-        protocol = TunnelQuicProtocol(*args, access_key=manager.key, **kwargs)
+        protocol = TunnelQuicProtocol(*args, access_key=getattr(manager, "authenticate", manager.key), **kwargs)
 
         def accept(reader, writer):
             secured = SecureWriter(writer, protocol=protocol)

@@ -14,6 +14,7 @@ import zlib
 from dataclasses import asdict, dataclass, field
 
 from cryptography import x509
+from client_config import decode
 
 
 def data_directory():
@@ -107,24 +108,40 @@ def import_package(path):
         cfg = json.loads(files["client.json"])
         if not isinstance(cfg, dict) or type(cfg.get("protocol")) is not int or cfg["protocol"] != 5 or cfg.get("ca") != "ca-cert.pem":
             raise ValueError("Нужен клиентский пакет протокола v5")
-        host, port = endpoint(cfg.get("server"))
-        srtl = cfg.get("srtl_client", False)
-        if type(srtl) is not bool:
-            raise ValueError("Неверная настройка SRTL")
-        ca = x509.load_pem_x509_certificate(files["ca-cert.pem"])
+        return import_fields(cfg.get("server"), files["ca-cert.pem"],
+                             files["access-key"].decode("ascii").strip(), cfg.get("srtl_client", False))
+    except (tarfile.TarError, gzip.BadGzipFile, zlib.error, EOFError, UnicodeError, KeyError,
+            RecursionError, x509.ExtensionNotFound, x509.DuplicateExtension):
+        raise ValueError("Не удалось прочитать клиентский пакет v5") from None
+
+
+def import_fields(server, pem, key, srtl=False, name=None):
+    host, port = endpoint(server)
+    key = valid_key(key)
+    if type(srtl) is not bool:
+        raise ValueError("Неверная настройка SRTL")
+    try:
+        ca = x509.load_pem_x509_certificate(pem)
         if not ca.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
-            raise ValueError("В пакете отсутствует сертификат CA")
+            raise ValueError("В конфигурации отсутствует сертификат CA")
         now = datetime.datetime.now(datetime.timezone.utc)
         if not ca.not_valid_before_utc <= now < ca.not_valid_after_utc:
             raise ValueError("Сертификат CA недействителен: проверьте срок и системное время")
         from cryptography.hazmat.primitives import hashes
         fingerprint = ca.fingerprint(hashes.SHA256()).hex()
-        key = valid_key(files["access-key"].decode("ascii").strip())
-        identity = hashlib.sha256((host + ":" + str(port) + ":" + fingerprint).encode()).hexdigest()[:24]
-        return Imported(Profile(identity, host, host, port, fingerprint, srtl), files["ca-cert.pem"], key)
-    except (tarfile.TarError, gzip.BadGzipFile, zlib.error, EOFError, UnicodeError, KeyError,
-            RecursionError, x509.ExtensionNotFound, x509.DuplicateExtension):
-        raise ValueError("Не удалось прочитать клиентский пакет v5") from None
+    except (x509.ExtensionNotFound, x509.DuplicateExtension):
+        raise ValueError("Неверный сертификат CA") from None
+    # Separate credentials on one server must not overwrite each other's vault entry.
+    identity = hashlib.sha256((host + ":" + str(port) + ":" + fingerprint + ":" + key).encode()).hexdigest()[:24]
+    return Imported(Profile(identity, name or host, host, port, fingerprint, srtl), pem, key)
+
+
+def import_text(text):
+    cfg = decode(text)
+    try:
+        return import_fields(cfg["server"], cfg["ca"].encode("ascii"), cfg["key"], cfg["srtl"], cfg["name"])
+    except (UnicodeError, ValueError, TypeError):
+        raise ValueError("Неверные адрес, ключ или сертификат в конфигурации. Создайте её заново на сервере") from None
 
 
 class Profiles:
