@@ -52,8 +52,22 @@ def build(rpm=False):
         command += ["--icon", str(icon)]
     for name in ("aioquic", "cryptography", "certifi", "PySide6-Essentials", "shiboken6"):
         command += ["--copy-metadata", name]
-    subprocess.run([*command, str(ROOT / "client.py")], cwd=ROOT, check=True)
+    build_env = dict(os.environ)
+    if os.name == "nt":
+        # Qt uses the Windows ICU API. A developer's PATH can contain a different
+        # ICU (e.g. Poppler), with the same DLL name and incompatible exports.
+        system = pathlib.Path(os.environ["SystemRoot"])
+        build_env["PATH"] = os.pathsep.join(map(str, (pathlib.Path(sys.executable).parent,
+            pathlib.Path(sys.base_prefix), system / "System32", system)))
+    subprocess.run([*command, "--noupx", str(ROOT / "client.py")], cwd=ROOT, env=build_env, check=True)
     bundle = work / "dist/Myownvpn"
+    if os.name == "nt":
+        import pefile
+        for library in bundle.rglob("icuuc.dll"):
+            image = pefile.PE(str(library))
+            names = {v.name for v in image.DIRECTORY_ENTRY_EXPORT.symbols}
+            if b"ucnv_open" not in names:
+                raise RuntimeError("Incompatible ICU DLL in Windows bundle; refusing to package")
     shutil.copyfile(ROOT / "desktop/README.md", bundle / "README.md")
     shutil.copyfile(ROOT / "desktop/THIRD_PARTY.md", bundle / "THIRD_PARTY.md")
     shutil.copyfile(ROOT / "desktop/DESIGN.md", bundle / "DESIGN.md")

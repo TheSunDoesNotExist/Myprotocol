@@ -67,7 +67,14 @@ python -m pip install --require-hashes --only-binary=:all: --no-deps -r desktop/
 python -m desktop
 ```
 
+Для явного подключения к первому сохранённому профилю при запуске добавьте
+`--connect`. Этот флаг не совмещается с импортом нового пакета.
+
 Для сборки установите `desktop/build-requirements.txt` и выполните:
+
+```bash
+python -m pip install --require-hashes --only-binary=:all: -r desktop/build-requirements.txt
+```
 
 ```bash
 python desktop/build.py        # Windows ZIP, либо Linux tar.gz

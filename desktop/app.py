@@ -675,7 +675,10 @@ def main():
     parser.add_argument("--import-package", type=pathlib.Path)
     parser.add_argument("--data-dir", type=pathlib.Path, help="separate profile directory")
     parser.add_argument("--snapshot", type=pathlib.Path, help="render an offline UI screenshot and exit")
+    parser.add_argument("--connect", action="store_true", help="connect the selected saved profile on launch")
     args = parser.parse_args()
+    if args.connect and args.import_package:
+        parser.error("import a package first, then use --connect with the saved profile")
     os.umask(0o077)
     if os.name == "posix":
         import resource
@@ -690,6 +693,8 @@ def main():
     window.show()
     if args.import_package:
         window.begin_import(args.import_package)
+    elif args.connect:
+        QTimer.singleShot(0, window.toggle_connection)
     signal.signal(signal.SIGINT, lambda *_: window.close())
     if args.snapshot:
         def snapshot():
