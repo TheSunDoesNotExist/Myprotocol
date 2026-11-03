@@ -1,0 +1,51 @@
+name: Fedora 44 client
+on:
+  push:
+    branches: [codex/desktop-client]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fedora:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: registry.fedoraproject.org/fedora:44@sha256:cb3bd21415bd82a2fae1a9379f3f972fa8e78d460c9f86101274d13230dd6fd6
+    env:
+      QT_QPA_PLATFORM: offscreen
+      LANG: C.UTF-8
+    steps:
+      - name: Install Fedora build and desktop dependencies
+        run: >-
+          dnf -y --setopt=install_weak_deps=False install
+          git python3 python3-pip rpm-build libsecret dbus-daemon gnome-keyring
+          glib2 libX11 libxcb libXext libXrender libxkbcommon libxkbcommon-x11
+          libXcursor libXfixes libXrandr libXi libSM libICE mesa-libEGL mesa-libGL fontconfig
+          xcb-util-cursor xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-wm
+          google-noto-sans-fonts dejavu-sans-mono-fonts
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned Python dependencies
+        run: |
+          python3 -m venv /tmp/myownvpn-build
+          /tmp/myownvpn-build/bin/python -m pip install --require-hashes --only-binary=:all: --no-deps -r desktop/requirements.lock
+          /tmp/myownvpn-build/bin/python -m pip install -r desktop/build-requirements.txt
+          /tmp/myownvpn-build/bin/python -m pip check
+      - name: Protocol and client regression checks
+        run: /tmp/myownvpn-build/bin/python -m unittest discover -v
+      - name: Real Secret Service storage
+        run: dbus-run-session -- /tmp/myownvpn-build/bin/python desktop/check_secret_service.py
+      - name: Build Fedora 44 RPM
+        run: /tmp/myownvpn-build/bin/python desktop/build.py --rpm
+      - name: Install and exercise the built RPM
+        run: |
+          dnf -y install .local/dist/myownvpn-client-*.rpm
+          /usr/libexec/myownvpn/Myownvpn --data-dir /tmp/myownvpn-installed-check --snapshot /tmp/myownvpn-installed.png
+          test -s /tmp/myownvpn-installed.png
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: myownvpn-fedora44-x86_64
+          path: |
+            .local/dist/myownvpn-client-*.rpm
+            .local/dist/myownvpn-client-*.rpm.sha256
+          if-no-files-found: error
+          retention-days: 14
