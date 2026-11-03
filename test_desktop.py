@@ -259,11 +259,16 @@ class DesktopEngineTests(DesktopServerCase):
             writer.write(b"before failure")
             await writer.drain()
             self.assertEqual(await asyncio.wait_for(reader.readexactly(14), 3), b"before failure")
-            self.tcp.close()
-            for task, channel in list(self.server.connections.items()):
-                if channel.kind == "tcp":
-                    channel.close()
-            state = await self.wait_event("state", lambda data: data.get("path") == "udp")
+            with self.assertLogs("tunnel", level="INFO") as records:
+                self.tcp.close()
+                for task, channel in list(self.server.connections.items()):
+                    if channel.kind == "tcp":
+                        channel.close()
+                try:
+                    state = await self.wait_event("state", lambda data: data.get("path") == "udp")
+                except TimeoutError:
+                    metadata = [getattr(record, "metadata", {}) for record in records.records]
+                    self.fail("UDP recovery did not complete: " + json.dumps(metadata[-60:]))
             self.assertEqual(state["status"], "connected")
             payload = os.urandom(128 * 1024)
             writer.write(payload)

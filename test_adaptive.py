@@ -412,6 +412,61 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
 
+    async def test_slow_alternative_probe_cannot_hide_active_channel_rtt(self):
+        self.reconnector.cancel()
+        await asyncio.gather(self.reconnector, return_exceptions=True)
+        session = Session(grace=5)
+        controller = AdaptiveClient(session, {"tcp": self.endpoint, "udp": self.udp_endpoint},
+                                    "a" * 64, self.context, "localhost", self.quic)
+        measured = asyncio.Event()
+        async def slow_probe(*args):
+            await asyncio.sleep(1.2)
+            measured.set()
+            return [1000, 1000, 1000]
+        with patch("tunnel.probe", side_effect=slow_probe):
+            task = asyncio.create_task(controller.run())
+            try:
+                await asyncio.wait_for(measured.wait(), 4)
+                await asyncio.sleep(.15)
+                self.assertEqual(controller.active, "tcp")
+                self.assertTrue(controller.selector.stats["tcp"].available)
+                self.assertLess(controller.selector.stats["tcp"].rtt_ms, 1000)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def test_probe_cleanup_cannot_delay_actual_reconnection(self):
+        self.reconnector.cancel()
+        await asyncio.gather(self.reconnector, return_exceptions=True)
+        session = Session(grace=8)
+        controller = AdaptiveClient(session, {"tcp": self.endpoint, "udp": self.udp_endpoint},
+                                    "a" * 64, self.context, "localhost", self.quic)
+        entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        async def stalled_measure():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+        with patch.object(controller, "measure", side_effect=stalled_measure):
+            task = asyncio.create_task(controller.run())
+            try:
+                await asyncio.wait_for(entered.wait(), 3)
+                measurement = controller.probing
+                self.tls.close()
+                server_session = self.manager.sessions[session.sid]
+                server_session.detach(server_session.writer)
+                await asyncio.wait_for(cleaning.wait(), 3)
+                await base.eventually(lambda: controller.active == "udp", timeout=3)
+                self.assertFalse(release.is_set())
+                self.assertIs(controller.probing, measurement, "only one measurement group may remain outstanding")
+                self.assertFalse(measurement.done())
+            finally:
+                release.set()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
 
 if __name__ == "__main__":
     unittest.main()

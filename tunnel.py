@@ -991,6 +991,17 @@ class AdaptiveClient:
         event("candidate_quarantined", logging.ERROR, path=kind,
               reason="certificate_or_authentication_failed")
 
+    def measure_active(self):
+        if self.active not in self.selector.stats or not self.session.rtt_samples:
+            return
+        stat = self.selector.stats[self.active]
+        if self.session.rtt_measured > stat.measured:
+            stat.update(list(self.session.rtt_samples), now=self.session.rtt_measured)
+            event("path_probe", path=self.active, reason="ok", stage="established_channel",
+                  rtt_ms=round(stat.rtt_ms, 2), jitter_ms=round(stat.jitter_ms, 2),
+                  failure_rate=round(stat.failure_rate, 3), attempts=stat.attempts)
+            self.measure_changed.set()
+
     async def measure(self):
         if self.session.writer is None or not self.runner or self.runner.done():
             return
@@ -1000,13 +1011,7 @@ class AdaptiveClient:
             if kind == self.active:
                 # Measure the established encrypted channel. A second connection's
                 # probe failure must not declare a working DATA channel unavailable.
-                stat = self.selector.stats[kind]
-                if self.session.rtt_samples and self.session.rtt_measured > stat.measured:
-                    stat.update(list(self.session.rtt_samples), now=self.session.rtt_measured)
-                    event("path_probe", path=kind, reason="ok", stage="established_channel",
-                          rtt_ms=round(stat.rtt_ms, 2), jitter_ms=round(stat.jitter_ms, 2),
-                          failure_rate=round(stat.failure_rate, 3), attempts=stat.attempts)
-                    self.measure_changed.set()
+                self.measure_active()
                 return
             failure = {}
             try:
@@ -1097,9 +1102,11 @@ class AdaptiveClient:
                 alive = self.session.writer is not None and self.runner and not self.runner.done()
                 if not alive:
                     if self.probing:
-                        self.probing.cancel()
-                        await asyncio.gather(self.probing, return_exceptions=True)
-                        self.probing = None
+                        if not self.probing.done() and not self.probing.cancelling():
+                            self.probing.cancel()
+                        if self.probing.done():
+                            await asyncio.gather(self.probing, return_exceptions=True)
+                            self.probing = None
                     if self.active:
                         failed = self.active
                         self.selector.stats[failed].update()
@@ -1112,13 +1119,15 @@ class AdaptiveClient:
                         await self.establish()
                     await asyncio.sleep(.05)
                     continue
+                self.measure_active()
                 if self.probing is None and now >= next_probe:
                     self.probing = asyncio.create_task(self.measure())
                     next_probe = now + self.interval
                 measured = self.measure_changed.is_set()
                 self.measure_changed.clear()
                 if self.probing and self.probing.done():
-                    await self.probing
+                    if not self.probing.cancelled():
+                        await self.probing
                     self.probing = None
                     measured = True
                 if measured and self.session.rtt_samples and now >= self.retry_at:
