@@ -105,7 +105,7 @@ def atomic_write(path, data, mode=0o600, *, group=None):
         temp.unlink(missing_ok=True)
 
 
-def run(command, *, data=None, capture=False, check=True):
+def run(command, *, data=None, capture=False, check=True, progress=None, activity=None):
     LOG.parent.mkdir(parents=True, exist_ok=True)
     if LOG.is_symlink():
         raise ValueError("Файл журнала установки не должен быть ссылкой.")
@@ -115,11 +115,16 @@ def run(command, *, data=None, capture=False, check=True):
             if os.fstat(log.fileno()).st_uid != 0:
                 raise ValueError("Журнал установки должен принадлежать root.")
             os.fchmod(log.fileno(), 0o600)
-        env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", PIP_CONFIG_FILE=os.devnull)
+        env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", PIP_CONFIG_FILE=os.devnull, LC_ALL="C.UTF-8")
         env.pop("MYVPN_KEY", None)
-        result = subprocess.run([str(v) for v in command], input=data,
-            stdout=subprocess.PIPE if capture else log, stderr=log,
-            env=env)
+        command = [str(v) for v in command]
+        if progress:
+            from server.progress import run as run_progress
+            result = run_progress(command, log, LOG, data=data, capture=capture, env=env,
+                                  label=progress, activity=activity, interactive=COLOR)
+        else:
+            result = subprocess.run(command, input=data, stdout=subprocess.PIPE if capture else log,
+                                    stderr=log, env=env)
     if check and result.returncode:
         raise RuntimeError(f"Команда {pathlib.Path(str(command[0])).name} завершилась с ошибкой. Журнал: {LOG}")
     return result
@@ -196,8 +201,11 @@ def port_check(cfg):
 def make_release(source):
     step("1/6", "Проверка пакета и установка штатных зависимостей Debian")
     source = verify_package(source)
-    run(("apt-get", "update"))
-    run(("apt-get", "install", "--no-install-recommends", "-y", "python3", "python3-venv", "ca-certificates", "systemd"))
+    row("Подробный журнал", LOG)
+    row("Просмотр в другом SSH", f"tail -f {LOG}")
+    run(("apt-get", "update"), progress="Обновление списка пакетов Debian", activity="apt")
+    run(("apt-get", "install", "--no-install-recommends", "-y", "python3", "python3-venv", "ca-certificates", "systemd"),
+        progress="Установка системных пакетов", activity="apt")
     version = json.loads(run(("/usr/bin/python3", "-c", "import sys,json;print(json.dumps(list(sys.version_info[:2])))"), capture=True).stdout)
     expected = debian_python()
     if version != expected:
@@ -214,11 +222,12 @@ def make_release(source):
         shutil.copyfile(source / name, dest)
         dest.chmod(0o644)
     step("2/6", "Изолированное окружение и проверка SHA-256 Python-пакетов")
-    run(("/usr/bin/python3", "-m", "venv", release / "venv"))
+    run(("/usr/bin/python3", "-m", "venv", release / "venv"), progress="Создание отдельного окружения Python")
     python = release / "venv/bin/python"
     run((python, "-m", "pip", "--isolated", "install", "--disable-pip-version-check", "--no-input", "--no-cache-dir",
-         "--index-url", "https://pypi.org/simple", "--require-hashes", "--only-binary=:all:", "--no-deps", "-r", release / "server/requirements.lock"))
-    run((python, "-m", "pip", "check"))
+         "--index-url", "https://pypi.org/simple", "--require-hashes", "--only-binary=:all:", "--no-deps", "-r", release / "server/requirements.lock"),
+        progress="Загрузка и проверка зависимостей Python", activity="pip")
+    run((python, "-m", "pip", "check"), progress="Проверка совместимости зависимостей", activity="pip")
     # Bootstrap uses umask 077. Only immutable program files become readable;
     # credentials and CA material are outside this tree. Never follow venv links.
     for path in [release, *release.rglob("*")]:
@@ -249,7 +258,8 @@ def credentials(release, cfg, args):
                 if first != getpass.getpass("  Повторите пароль: "):
                     raise ValueError("Пароли не совпадают. Установка службы не выполнена.")
                 password = first.encode("utf-8")
-            run((python, "-I", helper, "create", "--out", temp, *[v for ip in cfg["public_ips"] for v in ("--ip", ip)]), data=password)
+            run((python, "-I", helper, "create", "--out", temp, *[v for ip in cfg["public_ips"] for v in ("--ip", ip)]),
+                data=password, progress="Создание сертификатов и зашифрованной резервной копии CA")
         else:
             for name, path in (("ca-cert.pem", args.ca), ("server-cert.pem", args.cert), ("server-key.pem", args.cert_key)):
                 value = pathlib.Path(path).read_bytes()
@@ -257,7 +267,8 @@ def credentials(release, cfg, args):
                     raise ValueError("Файл сертификата/ключа превышает 1 МиБ.")
                 atomic_write(temp / name, value)
         info = json.loads(run((python, "-I", helper, "validate", "--ca", temp / "ca-cert.pem", "--cert", temp / "server-cert.pem",
-            "--key", temp / "server-key.pem", *[v for ip in cfg["public_ips"] for v in ("--ip", ip)]), capture=True).stdout)
+            "--key", temp / "server-key.pem", *[v for ip in cfg["public_ips"] for v in ("--ip", ip)]),
+            capture=True, progress="Проверка сертификата, IP и закрытого ключа").stdout)
         key = private_file(args.key_file).decode("ascii").strip() if args.key_file else secrets.token_hex(32)
         if len(key) != 64 or any(c not in "0123456789abcdefABCDEF" for c in key):
             raise ValueError("В файле ключа должны быть 64 hex-символа.")
@@ -296,7 +307,8 @@ def activate(release, cfg, no_start=False):
         if account.pw_uid == 0 or account.pw_shell not in ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false"):
             raise ValueError("Существующий пользователь myownvpn имеет login shell. Выберите чистую систему.")
     except KeyError:
-        run(("useradd", "--system", "--user-group", "--home-dir", "/var/lib/myownvpn", "--shell", "/usr/sbin/nologin", "myownvpn"))
+        run(("useradd", "--system", "--user-group", "--home-dir", "/var/lib/myownvpn", "--shell", "/usr/sbin/nologin", "myownvpn"),
+            progress="Создание отдельного пользователя службы")
         account = pwd.getpwnam("myownvpn")
     for path in (STATE_DIR, LOG_DIR):
         if path.is_symlink():
@@ -322,13 +334,14 @@ def activate(release, cfg, no_start=False):
         os.replace(link, BASE / "current")
         atomic_write(COMMAND, '#!/bin/sh\n' + MARKER + '\nexec /usr/bin/python3 -I /opt/myownvpn/current/server/admin.py "$@"\n', 0o755)
         step("5/6", "Включение службы" if not no_start else "Подготовка службы без запуска")
-        run(("systemctl", "daemon-reload"), check=not no_start)
-        run(("systemctl", "enable", "myownvpn.service"))
+        run(("systemctl", "daemon-reload"), check=not no_start, progress="Обновление конфигурации systemd")
+        run(("systemctl", "enable", "myownvpn.service"), progress="Включение автозапуска службы")
         if not no_start:
-            run(("systemctl", "restart", "myownvpn.service"))
+            run(("systemctl", "restart", "myownvpn.service"), progress="Запуск службы myownvpn")
             health_check(release)
     except BaseException:
-        run(("systemctl", "stop", "myownvpn.service"), check=False)
+        print("\n  Активация не завершена. Восстанавливаем прежнюю установку…", flush=True)
+        run(("systemctl", "stop", "myownvpn.service"), check=False, progress="Остановка неудачного запуска")
         if not was_enabled:
             run(("systemctl", "disable", "myownvpn.service"), check=False)
         if old_link:
@@ -345,9 +358,9 @@ def activate(release, cfg, no_start=False):
             atomic_write(COMMAND, old_command, 0o755)
         else:
             COMMAND.unlink(missing_ok=True)
-        run(("systemctl", "daemon-reload"), check=False)
+        run(("systemctl", "daemon-reload"), check=False, progress="Восстановление конфигурации systemd")
         if old_link and was_active and not no_start:
-            run(("systemctl", "restart", "myownvpn.service"), check=False)
+            run(("systemctl", "restart", "myownvpn.service"), check=False, progress="Запуск предыдущей версии")
         raise
     finally:
         link.unlink(missing_ok=True)
@@ -357,8 +370,8 @@ def health_check(release=None):
     release = release or BASE / "current"
     command = (release / "venv/bin/python", "-I", release / "server/identity.py", "health", "--config", ETC / "server.json",
                "--key", ETC / "credentials/health-key", "--ca", ETC / "ca-cert.pem")
-    for _ in range(3):
-        result = run(command, check=False)
+    for attempt in range(3):
+        result = run(command, check=False, progress=f"Проверка TLS и QUIC · попытка {attempt + 1}/3")
         if result.returncode == 0:
             return
         time.sleep(1)

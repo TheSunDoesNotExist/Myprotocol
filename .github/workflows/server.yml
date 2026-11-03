@@ -1,7 +1,7 @@
 name: Debian server
 on:
   push:
-    branches: [codex/debian12]
+    branches: [codex/debian12, codex/install-progress]
   workflow_dispatch:
 permissions:
   contents: read
