@@ -53,8 +53,10 @@ class DesktopGuiTests(DesktopServerCase):
             self.window.poll()
 
     async def test_empty_profile_disables_connect_and_shows_actual_local_port(self):
+        self.app.processEvents()
         self.assertFalse(self.window.connect_button.isEnabled())
         self.assertEqual(self.window.local_port.lineEdit().text(), "1080")
+        self.assertGreater(self.window.local_port.lineEdit().width(), 60)
         self.assertEqual(self.window.status.text(), "Отключено")
 
     async def test_import_connect_srtl_and_disconnect_with_real_tunnel(self):

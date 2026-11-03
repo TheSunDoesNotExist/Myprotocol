@@ -311,7 +311,6 @@ class Window(QMainWindow):
         self.local_port = QSpinBox()
         self.local_port.setRange(1024, 65535)
         self.local_port.setValue(1080)
-        self.local_port.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         port_label = label("Локальный порт", "secondary")
         port_label.setBuddy(self.local_port)
         self.local_port.setAccessibleName("Локальный TCP-порт")
