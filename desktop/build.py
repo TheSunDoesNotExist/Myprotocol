@@ -73,7 +73,8 @@ def build(rpm=False):
     shutil.copyfile(ROOT / "desktop/DESIGN.md", bundle / "DESIGN.md")
     licenses = bundle / "licenses"
     licenses.mkdir(exist_ok=True)
-    for name in ("aioquic", "cryptography", "certifi", "PySide6-Essentials", "shiboken6", "PyInstaller"):
+    for name in ("aioquic", "attrs", "certifi", "cffi", "cryptography", "pycparser", "pylsqpack",
+                 "pyOpenSSL", "service-identity", "typing_extensions", "PySide6-Essentials", "shiboken6", "PyInstaller"):
         distribution = importlib.metadata.distribution(name)
         for file in distribution.files or ():
             if any(part.lower() in ("licenses", "license", "copying") for part in file.parts) or file.name.lower().startswith(("license", "copying")):
@@ -82,6 +83,14 @@ def build(rpm=False):
                     destination = licenses / name / file.name
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(source, destination)
+    python_licenses = [pathlib.Path(sys.base_prefix) / "LICENSE.txt"]
+    if os.name != "nt":
+        python_licenses += list(pathlib.Path("/usr/share/licenses").glob("python3*/LICENSE*"))
+    for index, source in enumerate(python_licenses):
+        if source.is_file():
+            destination = licenses / "Python" / (str(index) + "-" + source.name)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
     if os.name == "nt":
         artifact = out / f"Myownvpn-Windows-x86_64-v{VERSION}.zip"
         with zipfile.ZipFile(artifact, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
