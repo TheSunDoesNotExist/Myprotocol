@@ -167,8 +167,9 @@ class Window(QMainWindow):
     def __init__(self, data_dir=None):
         super().__init__()
         self.setWindowTitle("Myownvpn")
-        self.resize(1240, 860)
-        self.setMinimumSize(1000, 740)
+        available = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(1240, available.width() - 48), min(860, available.height() - 64))
+        self.setMinimumSize(860, 600)
         self.store = Profiles(data_dir)
         self.vault = Vault(self.store.root)
         self.engine = Engine()
