@@ -13,7 +13,7 @@ import signal
 import sys
 
 from PySide6.QtCore import QTimer, Qt, QPointF, QRectF
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPainterPath, QPen, QPalette
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPainterPath, QPen, QPalette
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCheckBox,
     QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
@@ -659,6 +659,7 @@ def main():
     app.setOrganizationName("Myownvpn")
     app.setApplicationVersion(VERSION)
     app.setDesktopFileName("org.myownvpn.Client")
+    app.setWindowIcon(QIcon(str(pathlib.Path(__file__).with_name("myownvpn.svg"))))
     app.setStyle("Fusion")
     app.setFont(QFont("Segoe UI" if os.name == "nt" else "Noto Sans", 10))
     palette = QPalette()

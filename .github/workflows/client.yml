@@ -18,7 +18,7 @@ jobs:
       - name: Install Fedora build and desktop dependencies
         run: >-
           dnf -y --setopt=install_weak_deps=False install
-          git python3 python3-pip rpm-build libsecret dbus-daemon gnome-keyring
+          git python3 python3-pip rpm-build openssl libsecret dbus-daemon gnome-keyring
           glib2 libX11 libxcb libXext libXrender libxkbcommon libxkbcommon-x11
           libXcursor libXfixes libXrandr libXi libSM libICE mesa-libEGL mesa-libGL fontconfig
           xcb-util-cursor xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-wm

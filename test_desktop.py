@@ -1,6 +1,7 @@
 """Client security boundaries and actual GUI-adapter transport integration."""
 
 import asyncio
+import contextlib
 from dataclasses import replace
 import gzip
 import io
@@ -140,7 +141,7 @@ class ClientProfileTests(unittest.TestCase):
         self.assertEqual(len(messages), 1)
 
 
-class DesktopEngineTests(unittest.IsolatedAsyncioTestCase):
+class DesktopServerCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT)
         self.files = generate(self.temp.name, ["127.0.0.1"])
@@ -156,11 +157,24 @@ class DesktopEngineTests(unittest.IsolatedAsyncioTestCase):
                     await writer.drain()
             finally:
                 writer.close()
+                with contextlib.suppress(OSError):
+                    await writer.wait_closed()
                 self.target_tasks.discard(task)
         self.target = await asyncio.start_server(echo, "127.0.0.1", 0)
         self.server = Server("a" * 64, self.target.sockets[0].getsockname()[:2])
-        self.tcp = await serve_tcp(self.server, ("127.0.0.1", 0), tls_server(self.files["server-cert.pem"], self.files["server-key.pem"]))
-        self.port = self.tcp.sockets[0].getsockname()[1]
+        # Windows may reserve different ephemeral ranges for TCP and UDP.
+        # Choose a port legal for both protocols before creating async servers.
+        for attempt in range(32):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_port, socket.socket() as tcp_port:
+                    udp_port.bind(("127.0.0.1", 0))
+                    self.port = udp_port.getsockname()[1]
+                    tcp_port.bind(("127.0.0.1", self.port))
+                break
+            except OSError:
+                if attempt == 31:
+                    raise
+        self.tcp = await serve_tcp(self.server, ("127.0.0.1", self.port), tls_server(self.files["server-cert.pem"], self.files["server-key.pem"]))
         self.udp, self.udp_tasks = await serve_udp(self.server, ("127.0.0.1", self.port), quic_config(cert=self.files["server-cert.pem"], key=self.files["server-key.pem"]))
         with socket.socket() as reserved:
             reserved.bind(("127.0.0.1", 0))
@@ -197,6 +211,8 @@ class DesktopEngineTests(unittest.IsolatedAsyncioTestCase):
                     pass
                 await asyncio.sleep(.01)
 
+
+class DesktopEngineTests(DesktopServerCase):
     async def test_adapter_transfers_data_and_toggles_srtl_on_same_application_socket(self):
         self.engine.start(self.profile, "a" * 64, self.files["ca-cert.pem"])
         await self.wait_event("state", lambda data: data["status"] == "connected")
@@ -219,6 +235,35 @@ class DesktopEngineTests(unittest.IsolatedAsyncioTestCase):
         event = await self.wait_event("error")
         self.assertEqual(event["reason"], "security_verification_failed")
         self.assertEqual(self.target_count, 0)
+
+    async def test_modified_ca_file_fails_before_network_authentication(self):
+        other = generate(pathlib.Path(self.temp.name) / "other", ["127.0.0.1"])
+        self.engine.start(self.profile, "a" * 64, other["ca-cert.pem"])
+        event = await self.wait_event("error")
+        self.assertEqual(event["reason"], "security_verification_failed")
+        self.assertEqual(self.target_count, 0)
+
+    async def test_tcp_loss_switches_to_udp_with_same_application_socket(self):
+        self.engine.start(self.profile, "a" * 64, self.files["ca-cert.pem"])
+        await self.wait_event("state", lambda data: data.get("path") == "tcp")
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.local_port)
+        try:
+            writer.write(b"before failure")
+            await writer.drain()
+            self.assertEqual(await asyncio.wait_for(reader.readexactly(14), 3), b"before failure")
+            self.tcp.close()
+            for task, channel in list(self.server.connections.items()):
+                if channel.kind == "tcp":
+                    channel.close()
+            state = await self.wait_event("state", lambda data: data.get("path") == "udp")
+            self.assertEqual(state["status"], "connected")
+            payload = os.urandom(128 * 1024)
+            writer.write(payload)
+            await writer.drain()
+            self.assertEqual(await asyncio.wait_for(reader.readexactly(len(payload)), 5), payload)
+            self.assertEqual(self.target_count, 1)
+        finally:
+            writer.close()
 
     async def test_stop_during_connect_releases_local_listener(self):
         self.engine.start(self.profile, "a" * 64, self.files["ca-cert.pem"])

@@ -26,6 +26,21 @@ def build(rpm=False):
     out.mkdir(parents=True, exist_ok=True)
     work.mkdir(parents=True, exist_ok=True)
     assert work.resolve().is_relative_to(ROOT / ".local")
+    icon = None
+    if os.name == "nt":
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QGuiApplication, QPainter, QPixmap
+        from PySide6.QtSvg import QSvgRenderer
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        app = QGuiApplication.instance() or QGuiApplication([])
+        pixmap = QPixmap(256, 256)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        QSvgRenderer(str(ROOT / "desktop/myownvpn.svg")).render(painter)
+        painter.end()
+        icon = work / "myownvpn.ico"
+        if not pixmap.save(str(icon)):
+            raise RuntimeError("Could not render application icon")
     command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--windowed",
                "--name", "Myownvpn", "--distpath", str(work / "dist"), "--workpath", str(work / "work"),
                "--specpath", str(work), "--paths", str(ROOT),
@@ -33,12 +48,15 @@ def build(rpm=False):
                "--add-data", str(ROOT / "desktop/myownvpn.svg") + os.pathsep + "desktop",
                "--exclude-module", "tkinter", "--exclude-module", "PySide6.QtQml",
                "--exclude-module", "PySide6.QtQuick", "--exclude-module", "PySide6.QtWebEngineWidgets"]
+    if icon:
+        command += ["--icon", str(icon)]
     for name in ("aioquic", "cryptography", "certifi", "PySide6-Essentials", "shiboken6"):
         command += ["--copy-metadata", name]
     subprocess.run([*command, str(ROOT / "client.py")], cwd=ROOT, check=True)
     bundle = work / "dist/Myownvpn"
     shutil.copyfile(ROOT / "desktop/README.md", bundle / "README.md")
     shutil.copyfile(ROOT / "desktop/THIRD_PARTY.md", bundle / "THIRD_PARTY.md")
+    shutil.copyfile(ROOT / "desktop/DESIGN.md", bundle / "DESIGN.md")
     licenses = bundle / "licenses"
     licenses.mkdir(exist_ok=True)
     for name in ("aioquic", "cryptography", "certifi", "PySide6-Essentials", "shiboken6", "PyInstaller"):
