@@ -40,7 +40,7 @@ sudo bash install.sh
 
 Есть нативное приложение со вставкой конфигурации, импортом клиентского пакета, автоматическим выбором
 TCP/UDP, переключением SRTL, показателями канала и журналом событий.
-[Инструкция клиента](desktop/README.md) · [Сборки](https://github.com/TheSunDoesNotExist/Myprotocol/releases/tag/clients-v0.3.0).
+[Инструкция клиента](desktop/README.md) · [Сборки](https://github.com/TheSunDoesNotExist/Myprotocol/releases/tag/clients-v0.3.1).
 
 Windows x86_64: распакуйте ZIP целиком и запустите `Myownvpn.exe`.
 Fedora 44 x86_64: установите RPM через `sudo dnf install ./myownvpn-client-*.rpm`.

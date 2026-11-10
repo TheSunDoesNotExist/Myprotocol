@@ -3,6 +3,7 @@
 import asyncio
 from concurrent.futures import Future
 import logging
+import json
 import os
 import pathlib
 import unittest
@@ -13,7 +14,7 @@ from test_desktop import DesktopServerCase, make_package
 try:
     from PySide6.QtCore import Qt, QPoint
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QScrollArea
     from desktop.app import Window, configure_application
 except ImportError:
     QApplication = None
@@ -58,6 +59,12 @@ class DesktopGuiTests(DesktopServerCase):
         self.assertEqual(self.window.local_port.lineEdit().text(), "1080")
         self.assertGreater(self.window.local_port.lineEdit().width(), 60)
         self.assertEqual(self.window.status.text(), "Отключено")
+        for width, height in ((860, 600), (1200, 900)):
+            self.window.resize(width, height)
+            self.app.processEvents()
+            scroll = self.window.pages.widget(0)
+            self.assertIsInstance(scroll, QScrollArea)
+            self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
 
     async def test_pasted_configuration_uses_vault_and_preserves_client_name(self):
         from client_config import encode
@@ -77,6 +84,10 @@ class DesktopGuiTests(DesktopServerCase):
             self.window.begin_import(archive)
             await self.wait_ui(lambda: self.window.pending is None)
         self.assertEqual(len(self.window.profiles), 1)
+        self.window.resize(860, 600)
+        self.app.processEvents()
+        self.assertEqual(self.window.pages.widget(0).horizontalScrollBar().maximum(), 0)
+        self.window.resize(1200, 900)
         self.window.local_port.setValue(self.local_port)
         QTest.mouseClick(self.window.connect_button, Qt.MouseButton.LeftButton)
         await self.wait_ui(lambda: self.window.current_snapshot.get("status") == "connected")
@@ -97,6 +108,7 @@ class DesktopGuiTests(DesktopServerCase):
                 self.window.grab().save(str(folder / "connected.png"))
                 self.window.pages.setCurrentIndex(1)
                 self.app.processEvents()
+                self.window.log_table.selectRow(self.window.log_table.rowCount() - 1)
                 self.window.grab().save(str(folder / "logs.png"))
         finally:
             writer.close()
@@ -116,6 +128,29 @@ class DesktopGuiTests(DesktopServerCase):
             self.window.poll()
             start.assert_not_called()
         self.assertFalse(self.engine.running)
+
+    async def test_active_path_is_visible_before_first_measurement(self):
+        self.window.show_snapshot(dict(status="connected", path="tcp",
+                                       paths={"tcp": dict(available=False, rtt_ms=None)}))
+        self.assertEqual(self.window.path_rows["tcp"].note.text(), "Активен · измеряем задержку")
+        self.assertEqual(self.window.figures["rtt"].text(), "—")
+
+    async def test_log_selection_survives_updates_and_clears_when_filtered_out(self):
+        first = dict(time="2026-11-10T10:12:03+00:00", level="INFO", event="connect_attempt", path="tcp")
+        second = dict(time="2026-11-10T10:12:04+00:00", level="ERROR", event="connect_failed", path="udp")
+        self.window.logs.append(first)
+        self.window.refresh_logs()
+        self.window.log_table.selectRow(0)
+        self.assertEqual(json.loads(self.window.log_detail.toPlainText()), first)
+        self.window.logs.append(second)
+        self.window.refresh_logs()
+        self.assertEqual(json.loads(self.window.log_detail.toPlainText()), first)
+        self.window.log_level.setCurrentIndex(2)
+        self.assertEqual(self.window.log_table.rowCount(), 1)
+        self.assertEqual(self.window.log_detail.toPlainText(), "")
+        self.window.log_search.setText("tcp")
+        self.assertEqual(self.window.log_table.rowCount(), 0)
+        self.assertIn("Нет совпадений", self.window.log_empty.text())
 
 
 if __name__ == "__main__":
